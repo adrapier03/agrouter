@@ -12,6 +12,9 @@
  *
  * Usage: node ag_gsuite.js [--headless] [-n 3] [--file accounts.txt]
  */
+const dns = require('dns');
+try { dns.setDefaultResultOrder('ipv4first'); } catch {}
+
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -103,14 +106,24 @@ async function fillAny(target, labels, value, timeout = 5000) {
 }
 
 let activeServer = null;
+let activeTimer = null;
+
+function cleanupServer() {
+  if (activeTimer) {
+    clearTimeout(activeTimer);
+    activeTimer = null;
+  }
+  if (activeServer) {
+    try { activeServer.close(); } catch {}
+    activeServer = null;
+  }
+}
 
 // Loopback capture: start server, resolve with the auth code
 function waitForCode(timeoutMs) {
+  cleanupServer();
   return new Promise((resolve, reject) => {
-    if (activeServer) {
-      try { activeServer.close(); } catch {}
-      activeServer = null;
-    }
+    let settled = false;
     const srv = http.createServer((req, res) => {
       const u = new URL(req.url, `http://127.0.0.1:${CONFIG.REDIRECT_PORT}`);
       if (u.pathname === '/callback') {
@@ -119,51 +132,69 @@ function waitForCode(timeoutMs) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(code ? '<h2>OK — akun berhasil dihubungkan ke agrouter!</h2>' : `<h2>Error: ${err}</h2>`);
         setTimeout(() => {
-          try { srv.close(); } catch {}
-          if (activeServer === srv) activeServer = null;
-          code ? resolve(code) : reject(new Error('oauth error: ' + err));
+          cleanupServer();
+          if (!settled) {
+            settled = true;
+            code ? resolve(code) : reject(new Error('oauth error: ' + err));
+          }
         }, 300);
-      } else { res.writeHead(404); res.end(); }
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
     });
+
     activeServer = srv;
     srv.on('error', (e) => {
-      if (activeServer === srv) activeServer = null;
-      reject(e);
+      cleanupServer();
+      if (!settled) {
+        settled = true;
+        reject(e);
+      }
     });
+
     srv.listen(CONFIG.REDIRECT_PORT, '127.0.0.1', () => {});
-    setTimeout(() => {
-      try { srv.close(); } catch {}
-      if (activeServer === srv) activeServer = null;
-      reject(new Error('timeout waiting oauth redirect'));
+
+    activeTimer = setTimeout(() => {
+      cleanupServer();
+      if (!settled) {
+        settled = true;
+        reject(new Error('timeout waiting oauth redirect'));
+      }
     }, timeoutMs);
   });
 }
 
 async function googleLogin(page, acc, idx) {
-  // force English
-  const url = new URL(page.url());
-  if (url.searchParams.get('hl') !== 'en') {
-    url.searchParams.set('hl', 'en');
-    await page.goto(url.toString(), { waitUntil: 'domcontentloaded' }).catch(() => {});
-    await sleep(2500);
-  }
-
   log(idx, '[google] email');
-  if (!(await fillAny(page, ['Email or phone', 'Email'], acc.email, 8000)))
-    throw new Error('email field not found');
-  if (!(await clickAny(page, ['Next', 'Berikutnya'], 'next-email', 5000)))
-    await page.keyboard.press('Enter');
-  await sleep(3500);
+  const emailInput = page.locator('input[type="email"], input[name="identifier"], input#identifierId').first();
+  await emailInput.waitFor({ state: 'visible', timeout: 30000 });
+  await sleep(1000);
+  await emailInput.click();
+  await page.keyboard.type(acc.email, { delay: 35 });
+  await sleep(800);
 
-  log(idx, `[google] url after email: ${page.url().slice(0, 70)}`);
-  // password page can take a while; poll up to ~20s
-  let pwFilled = false;
-  for (let i = 0; i < 14 && !pwFilled; i++) {
-    pwFilled = await fillAny(page, ['Enter your password', 'Password'], acc.password, 1500);
-    if (!pwFilled) await sleep(1200);
+  const nextBtn = page.locator('#identifierNext button, button:has-text("Next")').first();
+  if (await nextBtn.isVisible({ timeout: 2500 }).catch(() => false)) {
+    await nextBtn.click();
+  } else {
+    await page.keyboard.press('Enter');
   }
-  if (!pwFilled) throw new Error('password field not found');
-  await page.keyboard.press('Enter');
+
+  log(idx, '[google] waiting password field...');
+  const pwInput = page.locator('input[name="Passwd"], input[type="password"]:not([aria-hidden="true"])').first();
+  await pwInput.waitFor({ state: 'visible', timeout: 30000 });
+  await sleep(1000);
+  await pwInput.click();
+  await page.keyboard.type(acc.password, { delay: 35 });
+  await sleep(800);
+
+  const pwNext = page.locator('#passwordNext button, button:has-text("Next")').first();
+  if (await pwNext.isVisible({ timeout: 2500 }).catch(() => false)) {
+    await pwNext.click();
+  } else {
+    await page.keyboard.press('Enter');
+  }
   await sleep(4500);
 
   // Interstitial "Make sure that you downloaded this app from Google" → click Sign in
@@ -187,27 +218,33 @@ async function googleLogin(page, acc, idx) {
     if (pat.test(bodyText)) throw new Error('google: ' + why);
   }
 
-  await clickAny(page, ['I understand', 'Saya mengerti'], 'workspace terms', 3000);
-
-  log(idx, `[google] url after pw: ${page.url().slice(0, 70)}`);
-  log(idx, '[google] consent screen');
-  await until(async () => /oauth|consent|nativeapp|signin|selectaccount|myaccount|14451/i.test(page.url()), 15000);
-  await sleep(2000);
-  // consent chain: interstitial Sign in -> Continue/Allow (poll sampai redirect ke loopback)
-  for (let i = 0; i < 10; i++) {
+  log(idx, '[google] waiting for consent or redirect...');
+  for (let i = 0; i < 25; i++) {
     const done = await until(async () => /14451|code=/.test(page.url()), 1500);
     if (done) break;
-    // nativeapp interstitial: tombolnya DIV#submit_approve_access (bukan role button)
+
+    // 1. Workspace Terms speedbump
+    const terms = page.getByRole('button', { name: /I understand|Saya mengerti/i }).or(page.locator('#confirm, button:has-text("I understand")')).first();
+    if (await terms.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await terms.click().catch(() => {});
+      log(idx, `[terms ${i}] clicked workspace terms (I understand)`);
+      await sleep(3000);
+      continue;
+    }
+
+    // 2. nativeapp interstitial: tombolnya DIV#submit_approve_access atau role button "Sign in"
     let clicked = false;
     try {
       const si = page.locator('#submit_approve_access, button:has-text("Sign in"), a:has-text("Sign in")').first();
       if (await si.isVisible({ timeout: 1500 }).catch(() => false)) {
-        await si.click();
+        await si.click().catch(() => {});
         clicked = true;
         log(idx, `[consent ${i}] clicked interstitial Sign in`);
         await sleep(3500);
       }
     } catch {}
+
+    // 3. Continue / Allow consent button
     if (!clicked) {
       clicked = await clickAny(page, ['Continue', 'Allow', 'Allow all', 'Lanjutkan', 'Izinkan'], 'consent', 2500);
       if (clicked) log(idx, `[consent ${i}] clicked consent`);
@@ -233,12 +270,13 @@ async function processAccount(idx, acc, headless) {
     prompt: 'consent',
     code_challenge: challenge,
     code_challenge_method: 'S256',
+    hl: 'en',
   }).toString();
 
   const codePromise = waitForCode(180000);
   const context = await launchContext({
     headless,
-    humanize: true,
+    humanize: false,
     stealthArgs: true,
     locale: 'en-US',
     args: ['--no-sandbox', '--disable-dev-shm-usage', `--fingerprint=${fpSeed}`, '--fingerprint-platform=windows'],
@@ -246,8 +284,8 @@ async function processAccount(idx, acc, headless) {
   const page = await context.newPage();
 
   try {
-    await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await sleep(2500);
+    await page.goto(authUrl, { waitUntil: 'commit', timeout: 60000 });
+    await sleep(2000);
     await googleLogin(page, acc, idx);
 
     log(idx, `[google] url after consent chain: ${page.url().slice(0, 90)}`);
@@ -305,20 +343,17 @@ async function processAccount(idx, acc, headless) {
     saveResult({ email: acc.email, status: 'fail', error: e.message, completedAt: new Date().toISOString() });
     return false;
   } finally {
-    if (activeServer) {
-      try { activeServer.close(); } catch {}
-      activeServer = null;
-    }
+    cleanupServer();
     await context.close().catch(() => {});
   }
 }
 
 process.on('SIGTERM', () => {
-  if (activeServer) { try { activeServer.close(); } catch {} activeServer = null; }
+  cleanupServer();
   process.exit(0);
 });
 process.on('SIGINT', () => {
-  if (activeServer) { try { activeServer.close(); } catch {} activeServer = null; }
+  cleanupServer();
   process.exit(0);
 });
 

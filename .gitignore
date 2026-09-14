@@ -17,6 +17,7 @@ ag_gsuite/accounts_onboard.txt
 ag_gsuite/accounts.txt
 ag_gsuite/ag_accounts.json
 ag_gsuite/result.txt
+ag_gsuite/node_modules
 ag_gsuite/node_modules/
 ag_gsuite/*.log
 ag_gsuite/*.png
