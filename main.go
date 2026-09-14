@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,11 +104,17 @@ type agFuncResp struct {
 	ID       string      `json:"id,omitempty"`
 }
 
+type agInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
 type agPart struct {
-	Text             string      `json:"text,omitempty"`
-	ThoughtSignature string      `json:"thoughtSignature,omitempty"`
-	FunctionCall     *agFuncCall `json:"functionCall,omitempty"`
-	FunctionResponse *agFuncResp `json:"functionResponse,omitempty"`
+	Text             string        `json:"text,omitempty"`
+	ThoughtSignature string        `json:"thoughtSignature,omitempty"`
+	InlineData       *agInlineData `json:"inlineData,omitempty"`
+	FunctionCall     *agFuncCall   `json:"functionCall,omitempty"`
+	FunctionResponse *agFuncResp   `json:"functionResponse,omitempty"`
 }
 
 const sentinelThoughtSignature = "skip_thought_signature_validator"
@@ -225,6 +232,94 @@ func contentToText(c interface{}) string {
 		}
 	}
 	return ""
+}
+
+func parseDataURL(u string) *agInlineData {
+	if !strings.HasPrefix(u, "data:") {
+		return nil
+	}
+	idx := strings.Index(u, ";base64,")
+	if idx == -1 {
+		return nil
+	}
+	mime := u[5:idx]
+	b64 := u[idx+8:]
+	if mime == "" {
+		mime = "image/png"
+	}
+	return &agInlineData{
+		MimeType: mime,
+		Data:     b64,
+	}
+}
+
+func downloadImageToInline(urlStr string) *agInlineData {
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "agrouter/vision")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	mime := resp.Header.Get("Content-Type")
+	if mime == "" || !strings.HasPrefix(mime, "image/") {
+		mime = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/jpeg"
+	}
+	return &agInlineData{
+		MimeType: strings.Split(mime, ";")[0],
+		Data:     base64.StdEncoding.EncodeToString(data),
+	}
+}
+
+// parseContentParts extracts text and multimodal images from OpenAI content payload.
+func parseContentParts(c interface{}) []agPart {
+	var parts []agPart
+	switch v := c.(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			parts = append(parts, agPart{Text: v})
+		}
+	case []interface{}:
+		for _, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			t, _ := m["type"].(string)
+			switch t {
+			case "text":
+				if txt, ok := m["text"].(string); ok && strings.TrimSpace(txt) != "" {
+					parts = append(parts, agPart{Text: txt})
+				}
+			case "image_url":
+				if iu, ok := m["image_url"].(map[string]interface{}); ok {
+					urlStr, _ := iu["url"].(string)
+					if inline := parseDataURL(urlStr); inline != nil {
+						parts = append(parts, agPart{InlineData: inline})
+					} else if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
+						if inline := downloadImageToInline(urlStr); inline != nil {
+							parts = append(parts, agPart{InlineData: inline})
+						}
+					}
+				}
+			}
+		}
+	}
+	return parts
 }
 
 var modelSynonym = map[string]string{
@@ -354,7 +449,10 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 			}
 			sys.WriteString(text)
 		case "user":
-			ag.Request.Contents = append(ag.Request.Contents, agContent{Role: "user", Parts: []agPart{{Text: text}}})
+			parts := parseContentParts(msg.Content)
+			if len(parts) > 0 {
+				ag.Request.Contents = append(ag.Request.Contents, agContent{Role: "user", Parts: parts})
+			}
 		case "assistant":
 			var parts []agPart
 			if text != "" {
@@ -462,7 +560,7 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 	for _, c := range ag.Request.Contents {
 		hasPart := false
 		for _, p := range c.Parts {
-			if strings.TrimSpace(p.Text) != "" || p.FunctionCall != nil || p.FunctionResponse != nil {
+			if strings.TrimSpace(p.Text) != "" || p.InlineData != nil || p.FunctionCall != nil || p.FunctionResponse != nil {
 				hasPart = true
 				break
 			}
