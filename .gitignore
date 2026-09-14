@@ -1,0 +1,33 @@
+# Binaries
+agrouter
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime data & logs
+*.log
+*.tmp
+accounts.json
+usage.jsonl
+admin-token.txt
+
+# GSuite automation runtime files
+ag_gsuite/accounts_onboard.txt
+ag_gsuite/accounts.txt
+ag_gsuite/ag_accounts.json
+ag_gsuite/result.txt
+ag_gsuite/node_modules/
+ag_gsuite/*.log
+ag_gsuite/*.png
+ag_gsuite/debug*.js
+
+# Node
+node_modules/
+npm-debug.log
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

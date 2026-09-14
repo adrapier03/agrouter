@@ -1,0 +1,12 @@
+{
+  "name": "agrouter-gsuite-onboard",
+  "version": "1.0.0",
+  "description": "Headless GSuite Google OAuth onboarding for agrouter using CloakBrowser",
+  "main": "ag_gsuite.js",
+  "scripts": {
+    "start": "node ag_gsuite.js"
+  },
+  "dependencies": {
+    "cloakbrowser": "^0.5.10"
+  }
+}

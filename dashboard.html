@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agrouter — antigravity pool</title>
+<style>
+:root{
+  --bg:#0d0f12; --panel:#15181d; --panel2:#1b1f26; --line:#262b33;
+  --tx:#e8e6e3; --dim:#8a919c; --lime:#c1f04c; --red:#ff6b6b; --blue:#5b8def; --amber:#ffb454;
+}
+*{box-sizing:border-box; margin:0}
+body{background:var(--bg); color:var(--tx); font:14px/1.5 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace; padding:24px}
+.wrap{max-width:980px; margin:0 auto}
+h1{font-size:18px; letter-spacing:.5px; margin-bottom:2px}
+h1 .ag{color:var(--lime)}
+.sub{color:var(--dim); font-size:12px; margin-bottom:20px}
+.stats{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px}
+.stat{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 18px; min-width:120px}
+.stat .v{font-size:22px; font-weight:700}
+.stat .k{color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:1px}
+.stat.ok .v{color:var(--lime)} .stat.err .v{color:var(--red)}
+table{width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden}
+th{background:var(--panel2); text-align:left; padding:9px 12px; font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); border-bottom:1px solid var(--line)}
+td{padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+tr:last-child td{border-bottom:none}
+.email{color:var(--tx)} .proj{color:var(--dim); font-size:12px}
+.badge{display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700}
+.b-on{background:#1d2b13; color:var(--lime); border:1px solid #3a5518}
+.b-off{background:#2b1616; color:var(--red); border:1px solid #552222}
+.b-err{color:var(--red); font-size:11px; display:block; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+button{background:var(--panel2); color:var(--tx); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; font:inherit; font-size:12px}
+button:hover{border-color:var(--blue)}
+button.danger:hover{border-color:var(--red); color:var(--red)}
+button.test:disabled{opacity:.5; cursor:wait}
+#login{max-width:380px; margin:12vh auto; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:28px}
+#login input{width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--tx); padding:10px; font:inherit; margin:10px 0}
+#login button{width:100%; padding:10px; background:var(--lime); color:#111; font-weight:700; border:none}
+.errmsg{color:var(--red); font-size:12px; min-height:16px}
+.toolbar{display:flex; justify-content:space-between; align-items:center; margin-bottom:12px}
+.toolbar .right{display:flex; gap:8px}
+#addbox{display:none; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px}
+#addbox.open{display:block}
+#addbox textarea{width:100%; height:90px; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--tx); padding:8px; font:inherit; font-size:12px}
+#addbox .row{display:flex; gap:8px; margin-top:8px; align-items:center}
+#addbox .row input{flex:1; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--tx); padding:7px; font:inherit; font-size:12px}
+#toast{position:fixed; bottom:18px; right:18px; background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--lime); padding:10px 14px; border-radius:6px; font-size:12px; display:none}
+.mut{color:var(--dim)}
+/* quota cards */
+.qcard{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:12px}
+.qhead{display:flex; gap:10px; align-items:baseline; margin-bottom:10px; font-size:13px}
+.qrow{display:flex; align-items:center; gap:10px; padding:2.5px 0}
+.qmodel{width:250px; font-size:12px; color:var(--tx); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.qbar{flex:1; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.qfill{height:100%; border-radius:4px}
+.qpct{width:64px; text-align:right; font-size:12px; font-weight:700}
+/* navigation & timeframe switcher */
+.nav-bar{display:flex; gap:6px; margin-bottom:20px; border-bottom:1px solid var(--line); padding-bottom:10px; flex-wrap:wrap}
+.nav-btn{background:transparent; color:var(--dim); border:1px solid transparent; border-radius:6px; padding:6px 14px; font-weight:700; font-size:12px; cursor:pointer}
+.nav-btn:hover{color:var(--tx); border-color:var(--line)}
+.nav-btn.active{background:var(--panel2); color:var(--lime); border-color:var(--line)}
+.tf-bar{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; align-items:center}
+.tf-btn{background:var(--panel); color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer}
+.tf-btn:hover{border-color:var(--blue); color:var(--tx)}
+.tf-btn.active{background:var(--panel2); color:var(--lime); border-color:var(--lime); font-weight:700}
+.sec-block{margin-bottom:24px}
+</style>
+</head>
+<body>
+<div id="login">
+  <h1><span class="ag">ag</span>router</h1>
+  <p class="sub">admin token required</p>
+  <input id="tok" type="password" placeholder="admin token" autocomplete="off">
+  <div class="errmsg" id="lerr"></div>
+  <button onclick="login()">MASUK</button>
+</div>
+
+<div class="wrap" id="app" style="display:none">
+  <div class="toolbar">
+    <div>
+      <h1><span class="ag">ag</span>router <span class="mut">/ antigravity pool</span></h1>
+      <div class="sub" id="upstream">daily-cloudcode-pa.googleapis.com · port 20129</div>
+    </div>
+    <div class="right">
+      <button onclick="toggleAdd()">+ AKUN</button>
+      <button onclick="loadAll()">⟳</button>
+      <button class="danger" onclick="logout()">logout</button>
+    </div>
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn active" id="nav-btn-all" onclick="setNav('all')">SEMUA</button>
+    <button class="nav-btn" id="nav-btn-usage" onclick="setNav('usage')">📊 USAGE</button>
+    <button class="nav-btn" id="nav-btn-accounts" onclick="setNav('accounts')">👥 AKUN</button>
+    <button class="nav-btn" id="nav-btn-keys" onclick="setNav('keys')">🔑 API KEYS</button>
+    <button class="nav-btn" id="nav-btn-quota" onclick="setNav('quota')">⚡ QUOTA</button>
+    <button class="nav-btn" id="nav-btn-console" onclick="setNav('console')">💻 CONSOLE</button>
+  </div>
+
+  <!-- SECTION: USAGE -->
+  <div id="section-usage" class="sec-block">
+    <div class="toolbar" style="margin-top:4px">
+      <div>
+        <h1><span class="ag">usage</span> <span class="mut" id="umeta">token & request analytics</span></h1>
+        <div class="sub" id="usage-subtitle">ringkasan token input, output, cached & total request</div>
+      </div>
+      <div class="right">
+        <button onclick="loadUsage(1)">⟳ refresh</button>
+      </div>
+    </div>
+
+    <div class="tf-bar">
+      <span style="font-size:12px;color:var(--dim);margin-right:4px">Periode:</span>
+      <button class="tf-btn active" id="tf-today" onclick="setUsageTf('today')">Today</button>
+      <button class="tf-btn" id="tf-1hari" onclick="setUsageTf('1hari')">1 Hari</button>
+      <button class="tf-btn" id="tf-7hari" onclick="setUsageTf('7hari')">7 Hari</button>
+      <button class="tf-btn" id="tf-30hari" onclick="setUsageTf('30hari')">30 Hari</button>
+      <button class="tf-btn" id="tf-60hari" onclick="setUsageTf('60hari')">60 Hari</button>
+    </div>
+
+    <div class="stats" id="usage-stats">
+      <div class="stat"><div class="v" id="u-req">0</div><div class="k">total request</div></div>
+      <div class="stat ok"><div class="v" id="u-inp">0</div><div class="k">input token (prompt)</div></div>
+      <div class="stat" style="border-color:#3a5585"><div class="v" id="u-out" style="color:var(--blue)">0</div><div class="k">output token (completion)</div></div>
+      <div class="stat" style="border-color:#554420"><div class="v" id="u-cache" style="color:var(--amber)">0</div><div class="k">cached token</div></div>
+      <div class="stat"><div class="v" id="u-tot">0</div><div class="k">total token</div></div>
+    </div>
+
+    <div style="font-size:13px;font-weight:700;color:var(--tx);margin:16px 0 8px">Penggunaan per Model (<span id="u-model-tf" style="color:var(--lime)">today</span>):</div>
+    <table id="usage-model-table">
+      <thead><tr><th>model</th><th>request</th><th>input token</th><th>output token</th><th>cached token</th><th>total token</th></tr></thead>
+      <tbody id="usage-model-rows"></tbody>
+    </table>
+
+    <div style="font-size:13px;font-weight:700;color:var(--tx);margin:20px 0 8px">Riwayat Penggunaan Harian:</div>
+    <table id="usage-daily-table">
+      <thead><tr><th>tanggal</th><th>request</th><th>input token</th><th>output token</th><th>cached token</th><th>total token</th></tr></thead>
+      <tbody id="usage-daily-rows"></tbody>
+    </table>
+  </div>
+
+  <!-- SECTION: ACCOUNTS -->
+  <div id="section-accounts" class="sec-block">
+    <div id="addbox">
+      <div style="display:flex;gap:10px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px">
+        <button id="tab-btn-gsuite" onclick="switchAddTab('gsuite')" style="background:var(--panel2);color:var(--lime);font-weight:700">⚡ Auto Onboard GSuite (Email|Password)</button>
+        <button id="tab-btn-manual" onclick="switchAddTab('manual')" style="background:transparent;color:var(--dim)">Manual (RefreshToken / JSON)</button>
+      </div>
+
+      <!-- Tab 1: GSuite Auto Onboard -->
+      <div id="add-tab-gsuite">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
+          Masukkan akun GSuite (format: <b style="color:var(--tx)">email|password</b> atau <b style="color:var(--tx)">email:password</b> per baris). Sistem otomatis login headless via CloakBrowser, approve OAuth consent, ambil refreshToken & projectId, dan langsung menambahkan akun ke pool agrouter:
+        </div>
+        <textarea id="gsuite-input" style="height:110px" placeholder="user1@mgsuite.in|password123&#10;user2@mgsuite.in|password123"></textarea>
+        <div class="row">
+          <button id="btn-gsuite-start" onclick="startGSuiteOnboard()" style="background:var(--lime);color:#111;font-weight:700">▶ PROSES ONBOARD GSUITE</button>
+          <button id="btn-gsuite-stop" onclick="stopGSuiteOnboard()" class="danger" style="display:none">⏹ BATALKAN</button>
+          <span class="mut">atau</span>
+          <input id="gsuite-file" type="file" accept=".txt" onchange="loadGSuiteFile(this)">
+          <span id="gsuite-status" style="font-size:12px;margin-left:auto;color:var(--dim)"></span>
+        </div>
+      </div>
+
+      <!-- Tab 2: Manual -->
+      <div id="add-tab-manual" style="display:none">
+        <div class="row"><input id="a-email" placeholder="email"></div>
+        <textarea id="a-rt" placeholder="refreshToken (paste)"></textarea>
+        <div class="row"><input id="a-proj" placeholder="projectId (mis. circular-collector-ndxwz)"><input id="a-proxy" placeholder="proxyUrl (opsional)"></div>
+        <div class="row"><button onclick="addAccount()">import</button><span class="mut">atau</span><input id="a-file" type="file"><button onclick="importFile()">dari file JSON</button></div>
+      </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+    <div id="batch-bar" style="display:none;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--lime);border-radius:8px;padding:10px 14px;margin-bottom:12px;align-items:center;gap:10px;flex-wrap:wrap">
+      <span id="batch-count" style="font-size:12px;font-weight:700;color:var(--lime)">0 akun dipilih</span>
+      <button onclick="batchAction('enable')" style="background:#1d2b13;color:var(--lime);border:1px solid #3a5518">Aktifkan (ON)</button>
+      <button onclick="batchAction('disable')" style="background:#2b1616;color:var(--amber);border:1px solid #553318">Matikan (OFF)</button>
+      <button onclick="batchAction('delete')" class="danger" style="margin-left:auto">🗑 Hapus Terpilih</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:36px;text-align:center"><input type="checkbox" id="check-all" onchange="toggleSelectAll(this)" title="Pilih Semua"></th>
+        <th>akun</th><th>status</th><th>req / err</th><th>token exp</th><th>aksi</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <!-- SECTION: API KEYS -->
+  <div id="section-keys" class="sec-block">
+    <div class="toolbar" style="margin-top:22px">
+      <h1><span class="ag">api keys</span> <span class="mut" id="kmeta">gate untuk /v1</span></h1>
+      <div class="right"><button onclick="createKey()">+ KEY</button></div>
+    </div>
+    <div id="keyalert" style="display:none;background:#1d2b13;border:1px solid #3a5518;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px">
+      <b style="color:var(--lime)">Key baru dibuat — salin sekarang, hanya ditampilkan sekali:</b>
+      <div style="font-size:14px;margin-top:6px;word-break:break-all" id="keyraw"></div>
+    </div>
+    <table id="keytable">
+      <thead><tr><th>nama</th><th>key</th><th>req</th><th>last used</th><th>aksi</th></tr></thead>
+      <tbody id="keyrows"></tbody>
+    </table>
+  </div>
+
+  <!-- SECTION: QUOTA -->
+  <div id="section-quota" class="sec-block">
+    <div class="toolbar" style="margin-top:22px">
+      <h1><span class="ag">quota</span> <span class="mut" id="qmeta">per-model, % sisa</span></h1>
+      <div class="right"><button onclick="loadQuota(1)">⟳ refresh</button></div>
+    </div>
+    <div id="quotas"></div>
+  </div>
+
+  <!-- SECTION: CONSOLE -->
+  <div id="section-console" class="sec-block">
+    <div class="toolbar" style="margin-top:22px">
+      <h1><span class="ag">console</span> <span class="mut" id="cmeta">live log</span></h1>
+      <div class="right">
+        <button onclick="clearLogs()">clear</button>
+        <button id="pausebtn" onclick="togglePause()">pause</button>
+      </div>
+    </div>
+    <div id="console" style="background:#0a0c0e;border:1px solid var(--line);border-radius:8px;padding:12px;height:340px;overflow-y:auto;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-all"></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+let TOK = sessionStorage.getItem('agtok') || '';
+const $ = id => document.getElementById(id);
+const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, opts={}) {
+  const r = await fetch(path, {...opts, headers: {'Authorization': 'Bearer '+TOK, 'Content-Type':'application/json', ...(opts.headers||{})}});
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  return r;
+}
+
+function showLogin(){ $('login').style.display='block'; $('app').style.display='none'; }
+function logout(){ TOK=''; sessionStorage.removeItem('agtok'); showLogin(); }
+
+async function login(){
+  TOK = $('tok').value.trim();
+  try {
+    const r = await fetch('/admin/accounts', {headers:{'Authorization':'Bearer '+TOK}});
+    if (r.status === 401) { $('lerr').textContent = 'token salah'; return; }
+    sessionStorage.setItem('agtok', TOK);
+    $('login').style.display='none'; $('app').style.display='block';
+    load(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load, 15000); setInterval(loadUsage, 15000); setInterval(loadQuota, 60000);
+  } catch(e){ $('lerr').textContent = 'gagal: '+e.message; }
+}
+
+function toast(msg, bad=false){
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.borderLeftColor = bad ? 'var(--red)' : 'var(--lime)';
+  t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(()=>t.style.display='none', 3500);
+}
+
+async function load(){
+  try {
+    const [acc, h] = await Promise.all([api('/admin/accounts'), fetch('/health')]);
+    const data = await acc.json();
+    const health = await h.json();
+    const total = health.accounts, active = health.active;
+    const reqs = data.accounts.reduce((s,a)=>s+a.requests,0);
+    const errs = data.accounts.reduce((s,a)=>s+a.errors,0);
+    $('stats').innerHTML = `
+      <div class="stat ok"><div class="v">${active}/${total}</div><div class="k">aktif</div></div>
+      <div class="stat"><div class="v">${reqs}</div><div class="k">requests</div></div>
+      <div class="stat ${errs>0?'err':''}"><div class="v">${errs}</div><div class="k">errors</div></div>
+      <div class="stat"><div class="v">RR</div><div class="k">round-robin</div></div>`;
+    $('rows').innerHTML = data.accounts.map(a => `
+      <tr>
+        <td style="text-align:center;vertical-align:middle"><input type="checkbox" class="acc-check" value="${a.id}" onchange="updateSelectedCount()"></td>
+        <td><span class="email">${esc(a.email)||'<span class=mut>(tanpa email)</span>'}</span>
+            <div class="proj">${esc(a.projectId)} ${a.proxyUrl?'· proxy':''}</div></td>
+        <td><span class="badge ${a.active?'b-on':'b-off'}">${a.active?'ACTIVE':'OFF'}</span>
+            ${a.lastError?`<span class="b-err" title="${esc(a.lastError)}">${esc(a.lastError.slice(0,90))}</span>`:''}</td>
+        <td>${a.requests} / <span style="color:${a.errors?'var(--red)':'var(--dim)'}">${a.errors}</span></td>
+        <td class="mut">${a.tokenExpiresAt ? new Date(a.tokenExpiresAt).toLocaleTimeString() : '—'}</td>
+        <td>
+          <button class="test" onclick="testAcc('${a.id}',this)">test</button>
+          <button onclick="toggleAcc('${a.id}','${a.active?'disable':'enable'}')">${a.active?'off':'on'}</button>
+          <button class="danger" onclick="delAcc('${a.id}')">hapus</button>
+        </td>
+      </tr>`).join('');
+    updateSelectedCount();
+    checkGSuiteStatus();
+  } catch(e){ if (e.message!=='unauthorized') toast('load gagal: '+e.message, true); }
+}
+
+async function toggleAcc(id, action){
+  await api('/admin/accounts/action', {method:'POST', body: JSON.stringify({id, action})});
+  toast(action==='enable'?'akun ON':'akun OFF'); load();
+}
+async function delAcc(id){
+  if (!confirm('hapus akun ini?')) return;
+  await api('/admin/accounts?id='+id, {method:'DELETE'});
+  toast('akun dihapus'); load();
+}
+async function testAcc(id, btn){
+  btn.disabled = true;
+  try {
+    const r = await api('/admin/accounts/action', {method:'POST', body: JSON.stringify({id, action:'test'})});
+    const j = await r.json();
+    toast(j.ok ? `test OK (200)` : `test gagal: ${j.status||''} ${(j.error||j.body||'').slice(0,80)}`, !j.ok);
+  } catch(e){ toast('test error: '+e.message, true); }
+  btn.disabled = false; load();
+}
+function toggleAdd(){ $('addbox').classList.toggle('open'); }
+
+// ---------- batch selection & actions ----------
+function toggleSelectAll(master) {
+  const cbs = document.querySelectorAll('.acc-check');
+  cbs.forEach(cb => cb.checked = master.checked);
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  const cbs = document.querySelectorAll('.acc-check:checked');
+  const total = document.querySelectorAll('.acc-check');
+  const count = cbs.length;
+  const bar = $('batch-bar');
+  const master = $('check-all');
+  if (master) {
+    master.checked = total.length > 0 && count === total.length;
+    master.indeterminate = count > 0 && count < total.length;
+  }
+  if (count > 0) {
+    bar.style.display = 'flex';
+    $('batch-count').textContent = `${count} akun dipilih`;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function getSelectedAccountIds() {
+  const cbs = document.querySelectorAll('.acc-check:checked');
+  return Array.from(cbs).map(cb => cb.value);
+}
+
+async function batchAction(action) {
+  const ids = getSelectedAccountIds();
+  if (ids.length === 0) return toast('Pilih akun terlebih dahulu', true);
+
+  if (action === 'delete') {
+    if (!confirm(`Yakin ingin MENGHAPUS ${ids.length} akun yang dipilih?`)) return;
+  }
+
+  try {
+    const r = await api('/admin/accounts/batch', {
+      method: 'POST',
+      body: JSON.stringify({ ids, action })
+    });
+    const j = await r.json();
+    if (!r.ok) return toast('Gagal: ' + (j.error || 'error'), true);
+    toast(`Berhasil: ${j.count || ids.length} akun diproses (${action})`);
+    if ($('check-all')) $('check-all').checked = false;
+    updateSelectedCount();
+    load();
+    loadQuota();
+  } catch (e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+// ---------- gsuite auto onboard ----------
+function switchAddTab(tab) {
+  if (tab === 'gsuite') {
+    $('add-tab-gsuite').style.display = 'block';
+    $('add-tab-manual').style.display = 'none';
+    $('tab-btn-gsuite').style.color = 'var(--lime)';
+    $('tab-btn-gsuite').style.background = 'var(--panel2)';
+    $('tab-btn-gsuite').style.fontWeight = '700';
+    $('tab-btn-manual').style.color = 'var(--dim)';
+    $('tab-btn-manual').style.background = 'transparent';
+    $('tab-btn-manual').style.fontWeight = 'normal';
+  } else {
+    $('add-tab-gsuite').style.display = 'none';
+    $('add-tab-manual').style.display = 'block';
+    $('tab-btn-manual').style.color = 'var(--lime)';
+    $('tab-btn-manual').style.background = 'var(--panel2)';
+    $('tab-btn-manual').style.fontWeight = '700';
+    $('tab-btn-gsuite').style.color = 'var(--dim)';
+    $('tab-btn-gsuite').style.background = 'transparent';
+    $('tab-btn-gsuite').style.fontWeight = 'normal';
+  }
+}
+
+async function loadGSuiteFile(input) {
+  const f = input.files[0];
+  if (!f) return;
+  const txt = await f.text();
+  $('gsuite-input').value = txt;
+  const count = txt.split('\n').filter(l => l.trim() && !l.startsWith('#')).length;
+  toast(`File dimuat (${count} akun)`);
+}
+
+let gsuitePollInterval = null;
+
+async function checkGSuiteStatus() {
+  try {
+    const r = await api('/admin/gsuite/status');
+    const d = await r.json();
+    const st = $('gsuite-status');
+    const btnStart = $('btn-gsuite-start');
+    const btnStop = $('btn-gsuite-stop');
+    const input = $('gsuite-input');
+
+    if (d.running) {
+      btnStart.disabled = true;
+      btnStart.style.opacity = '0.5';
+      btnStop.style.display = 'inline-block';
+      input.disabled = true;
+      const current = d.current ? `· ${esc(d.current)}` : '';
+      st.innerHTML = `<span style="color:var(--amber)">⏳ Sedang memproses ${d.success + d.failed + 1}/${d.total} (${d.success} OK, ${d.failed} FAIL) ${current}</span>`;
+      if (!gsuitePollInterval) {
+        gsuitePollInterval = setInterval(checkGSuiteStatus, 3000);
+      }
+    } else {
+      btnStart.disabled = false;
+      btnStart.style.opacity = '1';
+      btnStop.style.display = 'none';
+      input.disabled = false;
+      if (gsuitePollInterval) {
+        clearInterval(gsuitePollInterval);
+        gsuitePollInterval = null;
+        load();
+        loadQuota();
+      }
+      if (d.total > 0) {
+        st.innerHTML = `<span style="color:${d.failed > 0 ? 'var(--amber)' : 'var(--lime)'}">✓ Selesai: ${d.success} OK / ${d.failed} FAIL dari ${d.total} akun</span>`;
+      }
+    }
+  } catch (e) {}
+}
+
+async function startGSuiteOnboard() {
+  const text = $('gsuite-input').value.trim();
+  if (!text) return toast('Masukkan email|password terlebih dahulu', true);
+  try {
+    $('btn-gsuite-start').disabled = true;
+    const r = await api('/admin/gsuite/onboard', {
+      method: 'POST',
+      body: JSON.stringify({ accounts: text })
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      $('btn-gsuite-start').disabled = false;
+      return toast('Gagal: ' + (j.error || 'error'), true);
+    }
+    toast(`Memulai onboarding ${j.total} akun GSuite... pantau live log di console`);
+    checkGSuiteStatus();
+  } catch (e) {
+    $('btn-gsuite-start').disabled = false;
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function stopGSuiteOnboard() {
+  if (!confirm('Hentikan proses onboarding GSuite?')) return;
+  try {
+    await api('/admin/gsuite/stop', { method: 'POST' });
+    toast('Proses onboarding dihentikan');
+    checkGSuiteStatus();
+  } catch (e) {
+    toast('Gagal menghentikan: ' + e.message, true);
+  }
+}
+
+// ---------- api keys ----------
+async function loadKeys(){
+  try {
+    const r = await api('/admin/keys');
+    const d = await r.json();
+    $('kmeta').textContent = d.openAccess ? 'GATE TERBUKA — buat minimal 1 key untuk mengunci /v1' : 'gate aktif — /v1 butuh Bearer key';
+    $('kmeta').style.color = d.openAccess ? 'var(--amber)' : 'var(--dim)';
+    $('keyrows').innerHTML = d.keys.length === 0
+      ? '<tr><td colspan="5" class="mut">belum ada key — /v1 masih terbuka publik</td></tr>'
+      : d.keys.map(k => `
+      <tr>
+        <td>${esc(k.name)}</td>
+        <td class="mut" style="font-size:12px">${esc(k.key)}</td>
+        <td>${k.requests}</td>
+        <td class="mut">${k.lastUsed ? new Date(k.lastUsed).toLocaleString() : '—'}</td>
+        <td>
+          <button onclick="keyAction('${k.id}','${k.disabled?'enable':'disable'}')">${k.disabled?'enable':'disable'}</button>
+          <button class="danger" onclick="delKey('${k.id}')">hapus</button>
+        </td>
+      </tr>`).join('');
+  } catch(e){ if (e.message!=='unauthorized') toast('keys gagal: '+e.message, true); }
+}
+
+async function createKey(){
+  const name = prompt('Nama key (mis. rafi-main):');
+  if (name === null) return;
+  try {
+    const r = await api('/admin/keys', {method:'POST', body: JSON.stringify({name: name || ''})});
+    const j = await r.json();
+    $('keyraw').textContent = j.key;
+    $('keyalert').style.display = 'block';
+    await navigator.clipboard.writeText(j.key).catch(()=>{});
+    toast('key dibuat & dikopi ke clipboard');
+    loadKeys();
+  } catch(e){ toast('gagal: '+e.message, true); }
+}
+async function delKey(id){
+  if (!confirm('hapus key ini? client yang pakai langsung ditolak.')) return;
+  await api('/admin/keys?id='+id, {method:'DELETE'});
+  toast('key dihapus'); loadKeys();
+}
+async function keyAction(id, action){
+  await api('/admin/keys/action', {method:'POST', body: JSON.stringify({id, action})});
+  toast(action==='enable'?'key enabled':'key disabled'); loadKeys();
+}
+
+// ---------- console log (SSE) ----------
+let consolePaused = false;
+let consoleLines = [];
+let logSource = null;
+
+function colorize(line) {
+  // dim the leading HH:MM:SS timestamp; render body WITHOUT duplicating it
+  const m = line.match(/^(\d{2}:\d{2}:\d{2}) (.*)$/);
+  if (!m) return esc(line);
+  const ts = `<span style="color:var(--dim)">${m[1]}</span> `;
+  const body = m[2];
+  if (/FAIL|error|429|403|400|502|503/i.test(body)) return `${ts}<span style="color:var(--red)">${esc(body)}</span>`;
+  if (/chat OK|listening|refreshed|OK id=/.test(body)) return `${ts}<span style="color:var(--lime)">${esc(body)}</span>`;
+  if (/AUTH FAIL/.test(body)) return `${ts}<span style="color:var(--amber)">${esc(body)}</span>`;
+  return ts + esc(body);
+}
+
+function renderConsole() {
+  const box = $('console');
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = consoleLines.map(colorize).join('\n');
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function connectLogs() {
+  if (logSource) { logSource.close(); logSource = null; }
+  // EventSource cannot send Authorization headers — pass token via query param.
+  // Some extensions/HTTP2 stacks choke on EventSource; fall back to polling.
+  try {
+    logSource = new EventSource('/admin/logs?stream=1&token=' + encodeURIComponent(TOK));
+    logSource.onopen = () => { $('cmeta').textContent = 'live'; };
+    logSource.onmessage = (ev) => {
+      consoleLines.push(ev.data);
+      if (consoleLines.length > 500) consoleLines = consoleLines.slice(-500);
+      if (!consolePaused) renderConsole();
+    };
+    logSource.onerror = () => { $('cmeta').textContent = 'reconnecting…'; };
+    // if nothing arrives in 5s, assume EventSource is broken → polling fallback
+    setTimeout(() => {
+      if (!consoleLines.length && $('cmeta').textContent !== 'live') startPolling();
+    }, 5000);
+  } catch (e) { startPolling(); }
+}
+
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) return;
+  if (logSource) { logSource.close(); logSource = null; }
+  $('cmeta').textContent = 'polling (fallback)';
+  const tick = async () => {
+    try {
+      const r = await api('/admin/logs');
+      const d = await r.json();
+      if (JSON.stringify(d.lines) !== JSON.stringify(consoleLines.slice(-d.lines.length))) {
+        consoleLines = d.lines.slice(-500);
+        if (!consolePaused) renderConsole();
+      }
+    } catch {}
+  };
+  tick();
+  pollTimer = setInterval(tick, 3000);
+}
+
+function togglePause() {
+  consolePaused = !consolePaused;
+  $('pausebtn').textContent = consolePaused ? 'resume' : 'pause';
+  if (!consolePaused) renderConsole();
+}
+
+async function clearLogs() {
+  await api('/admin/logs/clear', { method: 'POST' });
+  consoleLines = [];
+  renderConsole();
+  toast('console dibersihkan');
+}
+
+// ---------- quota ----------
+let quotaLoaded = false;
+function barColor(p){ return p > 50 ? 'var(--lime)' : p > 15 ? 'var(--amber)' : 'var(--red)'; }
+
+async function loadQuota(force=0){
+  $('qmeta').textContent = force ? 'fetching…' : $('qmeta').textContent;
+  try {
+    const r = await api('/admin/quota' + (force ? '?refresh=1' : ''));
+    const d = await r.json();
+    const when = new Date(d.fetchedAt).toLocaleTimeString();
+    $('qmeta').textContent = `per-model, % sisa · ${when} ${d.cached?'(cache)':'(fresh)'}`;
+    $('quotas').innerHTML = d.accounts.map(acc => {
+      if (acc.error && acc.error !== 'pending')
+        return `<div class="qcard"><div class="qhead">${esc(acc.email)} <span class="badge b-off">ERR</span></div><div class="b-err">${esc(acc.error)}</div></div>`;
+      const entries = Object.entries(acc.quotas||{})
+        .filter(([m,q]) => q.remainingPct >= 0)
+        .sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
+      const noBucket = Object.entries(acc.quotas||{}).filter(([m,q]) => q.remainingPct < 0).map(([m])=>m);
+      const modelRows = entries.map(([m,q]) => {
+        const p = q.remainingPct;
+        const reset = q.resetAt ? new Date(q.resetAt).toLocaleTimeString() : '';
+        return `<div class="qrow" title="reset ${reset}">
+          <div class="qmodel">${esc(m)}</div>
+          <div class="qbar"><div class="qfill" style="width:${p.toFixed(1)}%;background:${barColor(p)}"></div></div>
+          <div class="qpct" style="color:${barColor(p)}">${p.toFixed(1)}%</div></div>`;
+      }).join('') + (noBucket.length ? `<div class="mut" style="margin-top:6px;font-size:11px">tanpa bucket: ${esc(noBucket.join(', '))}</div>` : '');
+      return `<div class="qcard">
+        <div class="qhead"><span class="email">${esc(acc.email)}</span>
+          <span class="mut">${esc(acc.tier||'')}</span>
+          <span class="mut" style="margin-left:auto">${entries.length} model</span></div>
+        ${entries.length===0?'<div class="mut">tidak ada data quota</div>':modelRows}
+      </div>`;
+    }).join('');
+    quotaLoaded = true;
+  } catch(e){ if (e.message!=='unauthorized') toast('quota gagal: '+e.message, true); }
+}
+
+// ---------- usage analytics ----------
+let currentUsageData = null;
+let currentUsageTf = 'today';
+
+function fmtNum(n) {
+  if (n === null || n === undefined) return '0';
+  return Number(n).toLocaleString('id-ID');
+}
+
+function fmtCompact(n) {
+  if (!n) return '0';
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return n.toLocaleString('id-ID');
+}
+
+function setNav(tab) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === 'nav-btn-' + tab));
+  const sections = ['usage', 'accounts', 'keys', 'quota', 'console'];
+  sections.forEach(s => {
+    const el = $('section-' + s);
+    if (!el) return;
+    if (tab === 'all' || tab === s) {
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  });
+}
+
+async function loadUsage(force=0) {
+  if (force) $('umeta').textContent = 'fetching…';
+  try {
+    const tz = new Date().getTimezoneOffset();
+    const r = await api('/admin/usage?tz=' + encodeURIComponent(tz));
+    const d = await r.json();
+    currentUsageData = d;
+    const when = new Date(d.generatedAt).toLocaleTimeString();
+    $('umeta').textContent = `token & request analytics · ${when}`;
+    renderUsage();
+  } catch(e) {
+    if (e.message !== 'unauthorized') toast('usage gagal: ' + e.message, true);
+  }
+}
+
+function setUsageTf(tf) {
+  currentUsageTf = tf;
+  document.querySelectorAll('.tf-btn').forEach(b => {
+    b.classList.toggle('active', b.id === 'tf-' + tf);
+  });
+  renderUsage();
+}
+
+function renderUsage() {
+  if (!currentUsageData || !currentUsageData.timeframes) return;
+  const tf = currentUsageData.timeframes[currentUsageTf] || {
+    requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, byModel: {}
+  };
+
+  $('u-req').innerHTML = `${fmtCompact(tf.requests)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.requests)})</span>`;
+  $('u-inp').innerHTML = `${fmtCompact(tf.inputTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.inputTokens)})</span>`;
+  $('u-out').innerHTML = `${fmtCompact(tf.outputTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.outputTokens)})</span>`;
+  $('u-cache').innerHTML = `${fmtCompact(tf.cachedTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.cachedTokens)})</span>`;
+  $('u-tot').innerHTML = `${fmtCompact(tf.totalTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.totalTokens)})</span>`;
+  $('u-model-tf').textContent = currentUsageTf;
+
+  // Render per-model table
+  const modelEntries = Object.entries(tf.byModel || {}).sort((a,b) => b[1].requests - a[1].requests);
+  if (modelEntries.length === 0) {
+    $('usage-model-rows').innerHTML = '<tr><td colspan="6" class="mut" style="text-align:center">Belum ada request untuk periode ini</td></tr>';
+  } else {
+    $('usage-model-rows').innerHTML = modelEntries.map(([m, s]) => `
+      <tr>
+        <td style="font-weight:700;color:var(--tx)">${esc(m)}</td>
+        <td>${fmtNum(s.requests)}</td>
+        <td style="color:var(--lime)">${fmtNum(s.inputTokens)}</td>
+        <td style="color:var(--blue)">${fmtNum(s.outputTokens)}</td>
+        <td style="color:var(--amber)">${fmtNum(s.cachedTokens)}</td>
+        <td><b>${fmtNum(s.totalTokens)}</b></td>
+      </tr>
+    `).join('');
+  }
+
+  // Render daily history table
+  const daily = currentUsageData.daily || [];
+  if (daily.length === 0) {
+    $('usage-daily-rows').innerHTML = '<tr><td colspan="6" class="mut" style="text-align:center">Belum ada data harian</td></tr>';
+  } else {
+    $('usage-daily-rows').innerHTML = daily.map(d => `
+      <tr>
+        <td style="font-weight:700;color:var(--tx)">${esc(d.date)}</td>
+        <td>${fmtNum(d.requests)}</td>
+        <td style="color:var(--lime)">${fmtNum(d.inputTokens)}</td>
+        <td style="color:var(--blue)">${fmtNum(d.outputTokens)}</td>
+        <td style="color:var(--amber)">${fmtNum(d.cachedTokens)}</td>
+        <td><b>${fmtNum(d.totalTokens)}</b></td>
+      </tr>
+    `).join('');
+  }
+}
+
+function loadAll(){ load(); loadKeys(); loadQuota(1); loadUsage(1); }
+
+async function addAccount(){
+  const body = {
+    email: $('a-email').value.trim(),
+    refreshToken: $('a-rt').value.trim(),
+    projectId: $('a-proj').value.trim(),
+    proxyUrl: $('a-proxy').value.trim(),
+  };
+  if (!body.refreshToken) return toast('refreshToken wajib', true);
+  const r = await api('/admin/accounts', {method:'POST', body: JSON.stringify(body)});
+  const j = await r.json();
+  toast('akun masuk: '+j.id); $('a-rt').value=''; load();
+}
+async function importFile(){
+  const f = $('a-file').files[0]; if (!f) return toast('pilih file dulu', true);
+  const txt = await f.text();
+  // format: satu JSON per baris ATAU satu baris "email|{json}"
+  const lines = txt.split('\n').filter(l=>l.trim());
+  let n = 0;
+  for (const line of lines) {
+    try {
+      let email='', d;
+      if (line.includes('|')) { const [e, rest] = line.split('|', 2); email = e.trim(); d = JSON.parse(rest); }
+      else d = JSON.parse(line);
+      const body = {email: email || d.email || '', refreshToken: d.refreshToken, projectId: d.projectId||''};
+      if (!body.refreshToken) continue;
+      await api('/admin/accounts', {method:'POST', body: JSON.stringify(body)});
+      n++;
+    } catch(e){/* skip line */}
+  }
+  toast(`import ${n} akun`); load();
+}
+
+if (TOK) { fetch('/admin/accounts', {headers:{'Authorization':'Bearer '+TOK}}).then(r => {
+  if (r.ok) { $('login').style.display='none'; $('app').style.display='block'; load(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load,15000); setInterval(loadUsage,15000); setInterval(loadQuota,60000); }
+  else showLogin();
+}).catch(showLogin); } else showLogin();
+</script>
+</body>
+</html>
