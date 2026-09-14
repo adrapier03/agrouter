@@ -219,16 +219,19 @@ async function googleLogin(page, acc, idx) {
   }
 
   log(idx, '[google] waiting for consent or redirect...');
-  for (let i = 0; i < 25; i++) {
-    const done = await until(async () => /14451|code=/.test(page.url()), 1500);
-    if (done) break;
+  for (let i = 0; i < 30; i++) {
+    const curUrl = page.url();
+    if (curUrl.startsWith('http://127.0.0.1:14451') || curUrl.includes('/callback?code=')) {
+      log(idx, '[google] loopback redirect reached!');
+      break;
+    }
 
     // 1. Workspace Terms speedbump
     const terms = page.getByRole('button', { name: /I understand|Saya mengerti/i }).or(page.locator('#confirm, button:has-text("I understand")')).first();
     if (await terms.isVisible({ timeout: 1000 }).catch(() => false)) {
       await terms.click().catch(() => {});
       log(idx, `[terms ${i}] clicked workspace terms (I understand)`);
-      await sleep(3000);
+      await sleep(3500);
       continue;
     }
 
