@@ -201,10 +201,11 @@ type agPayload struct {
 		} `json:"systemInstruction,omitempty"`
 		Tools            []agTool `json:"tools,omitempty"`
 		GenerationConfig struct {
-			MaxOutputTokens *int     `json:"maxOutputTokens,omitempty"`
-			Temperature     *float64 `json:"temperature,omitempty"`
-			TopP            *float64 `json:"topP,omitempty"`
-			ThinkingConfig  *struct {
+			MaxOutputTokens    *int     `json:"maxOutputTokens,omitempty"`
+			Temperature        *float64 `json:"temperature,omitempty"`
+			TopP               *float64 `json:"topP,omitempty"`
+			ResponseModalities []string `json:"responseModalities,omitempty"`
+			ThinkingConfig     *struct {
 				ThinkingBudget int `json:"thinkingBudget"`
 			} `json:"thinkingConfig,omitempty"`
 		} `json:"generationConfig"`
@@ -329,6 +330,9 @@ var modelSynonym = map[string]string{
 	"claude-3-7-sonnet":          "claude-sonnet-4-6",
 	"claude-3-5-sonnet-thinking": "claude-opus-4-6-thinking",
 	"claude-3-7-sonnet-thinking": "claude-opus-4-6-thinking",
+	"imagen-3":                   "gemini-3.1-flash-image",
+	"dall-e-3":                   "gemini-3.1-flash-image",
+	"gemini-image":               "gemini-3.1-flash-image",
 }
 
 // tieredRe: gemini-3.6/3.7/3.8 flash levels ride on the bare "-tiered" upstream id,
@@ -551,6 +555,9 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 			ThinkingBudget int `json:"thinkingBudget"`
 		}{ThinkingBudget: *thinkingBudget}
 	}
+	if upstreamModel == "gemini-3.1-flash-image" {
+		ag.Request.GenerationConfig.ResponseModalities = []string{"TEXT", "IMAGE"}
+	}
 	ag.Request.GenerationConfig.Temperature = o.Temperature
 	ag.Request.GenerationConfig.TopP = o.TopP
 	// PR 3366 parity (decolua/9router): drop EVERY content whose parts end up empty —
@@ -642,9 +649,10 @@ type agStreamChunk struct {
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text             string      `json:"text"`
-					ThoughtSignature string      `json:"thoughtSignature,omitempty"`
-					FunctionCall     *agFuncCall `json:"functionCall,omitempty"`
+					Text             string        `json:"text"`
+					ThoughtSignature string        `json:"thoughtSignature,omitempty"`
+					InlineData       *agInlineData `json:"inlineData,omitempty"`
+					FunctionCall     *agFuncCall   `json:"functionCall,omitempty"`
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason  string `json:"finishReason,omitempty"`
@@ -696,6 +704,13 @@ func sseTranslate(upstream io.Reader, model string, w io.Writer, flusher http.Fl
 				if p.Text != "" {
 					outChars += len(p.Text)
 					if err := sendChunk(map[string]interface{}{"content": p.Text}, nil); err != nil {
+						return "", err
+					}
+				}
+				if p.InlineData != nil && p.InlineData.Data != "" {
+					imgMd := fmt.Sprintf("\n![image](data:%s;base64,%s)\n", p.InlineData.MimeType, p.InlineData.Data)
+					outChars += len(imgMd)
+					if err := sendChunk(map[string]interface{}{"content": imgMd}, nil); err != nil {
 						return "", err
 					}
 				}
@@ -853,6 +868,9 @@ func nonStreamResponse(body []byte, model string, approxPrompt int) (*TokenUsage
 		for _, p := range cand.Content.Parts {
 			if p.Text != "" {
 				sb.WriteString(p.Text)
+			}
+			if p.InlineData != nil && p.InlineData.Data != "" {
+				sb.WriteString(fmt.Sprintf("\n![image](data:%s;base64,%s)\n", p.InlineData.MimeType, p.InlineData.Data))
 			}
 			if p.FunctionCall != nil {
 				callID := p.FunctionCall.ID
@@ -2042,6 +2060,229 @@ func handleGSuiteStop(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "message": "proses dibatalkan"})
 }
 
+func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
+	keyName := "default"
+	if ok, k := store.checkAPIKey(r); !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid or missing API key","type":"authentication_error"}}`))
+		return
+	} else if k != nil && k.Name != "" {
+		keyName = k.Name
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	if err != nil {
+		http.Error(w, `{"error":"read body"}`, http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Prompt         string `json:"prompt"`
+		Model          string `json:"model"`
+		N              int    `json:"n"`
+		Size           string `json:"size"`
+		Quality        string `json:"quality"`
+		ResponseFormat string `json:"response_format"`
+		Image          string `json:"image"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"prompt is required","type":"invalid_request_error"}}`))
+		return
+	}
+
+	model := req.Model
+	if model == "" || model == "dall-e-3" || model == "imagen-3" || model == "image" || model == "gemini-image" {
+		model = "gemini-3.1-flash-image"
+	}
+	upstreamModel, _ := resolveUpstreamModel(model)
+
+	store.mu.Lock()
+	nActive := 0
+	for _, a := range store.Accounts {
+		if a.Active {
+			nActive++
+		}
+	}
+	store.mu.Unlock()
+	if nActive == 0 {
+		http.Error(w, `{"error":{"message":"no active accounts configured"}}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	maxAttempts := nActive
+	attempted := map[string]bool{}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		acc := store.pickRoundRobin()
+		if acc == nil {
+			break
+		}
+		if attempted[acc.ID] {
+			break
+		}
+		attempted[acc.ID] = true
+		tok, err := store.ensureToken(acc)
+		if err != nil {
+			slogf("[image %d] %s token refresh failed: %v", attempt, acc.Email, err)
+			continue
+		}
+
+		var parts []map[string]interface{}
+		if req.Image != "" {
+			if inline := parseDataURL(req.Image); inline != nil {
+				parts = append(parts, map[string]interface{}{
+					"inlineData": map[string]string{
+						"mimeType": inline.MimeType,
+						"data":     inline.Data,
+					},
+				})
+			}
+		}
+		parts = append(parts, map[string]interface{}{
+			"text": req.Prompt,
+		})
+
+		payload := map[string]interface{}{
+			"project": acc.ProjectID,
+			"model":   upstreamModel,
+			"request": map[string]interface{}{
+				"contents": []map[string]interface{}{
+					{
+						"role":  "user",
+						"parts": parts,
+					},
+				},
+				"generationConfig": map[string]interface{}{
+					"responseModalities": []string{"TEXT", "IMAGE"},
+				},
+			},
+		}
+
+		pb, _ := json.Marshal(payload)
+		url := "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
+		upReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(pb))
+		if err != nil {
+			continue
+		}
+		upReq.Header.Set("Content-Type", "application/json")
+		upReq.Header.Set("Authorization", "Bearer "+tok)
+		upReq.Header.Set("User-Agent", "antigravity/ide/2.1.1 darwin/arm64")
+		upReq.Header.Set("X-Goog-Api-Client", "google-genai/0.1.1 gl-node/24.18.0")
+
+		resp, err := httpClient.Do(upReq)
+		if err != nil {
+			slogf("[image %d] %s request error: %v", attempt, acc.Email, err)
+			continue
+		}
+		respBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			slogf("[image %d] %s returned HTTP %d: %s", attempt, acc.Email, resp.StatusCode, string(respBytes[:min(len(respBytes), 120)]))
+			if resp.StatusCode == http.StatusNotFound {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				w.Write(respBytes)
+				return
+			}
+			continue
+		}
+
+		var agResp struct {
+			Response struct {
+				Candidates []struct {
+					Content struct {
+						Parts []struct {
+							Text       string        `json:"text"`
+							InlineData *agInlineData `json:"inlineData"`
+						} `json:"parts"`
+					} `json:"content"`
+				} `json:"candidates"`
+				UsageMetadata *agUsageMetadata `json:"usageMetadata"`
+			} `json:"response"`
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text       string        `json:"text"`
+						InlineData *agInlineData `json:"inlineData"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+			UsageMetadata *agUsageMetadata `json:"usageMetadata"`
+		}
+		json.Unmarshal(respBytes, &agResp)
+
+		cands := agResp.Response.Candidates
+		if len(cands) == 0 {
+			cands = agResp.Candidates
+		}
+
+		var b64Data string
+		var mimeType string
+		var revisedPrompt string
+		for _, c := range cands {
+			for _, p := range c.Content.Parts {
+				if p.InlineData != nil && p.InlineData.Data != "" {
+					b64Data = p.InlineData.Data
+					mimeType = p.InlineData.MimeType
+				}
+				if p.Text != "" {
+					revisedPrompt += p.Text
+				}
+			}
+		}
+
+		if b64Data == "" {
+			slogf("[image %d] %s returned 200 but no image inlineData found", attempt, acc.Email)
+			continue
+		}
+
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+
+		dataObj := map[string]interface{}{}
+		if req.ResponseFormat == "url" {
+			dataObj["url"] = fmt.Sprintf("data:%s;base64,%s", mimeType, b64Data)
+		} else {
+			dataObj["b64_json"] = b64Data
+		}
+		if revisedPrompt != "" {
+			dataObj["revised_prompt"] = revisedPrompt
+		}
+
+		now := time.Now().Unix()
+		result := map[string]interface{}{
+			"created": now,
+			"data":    []map[string]interface{}{dataObj},
+		}
+
+		slogf("[image] 200 OK via %s, model: %s, b64 size: %d bytes", acc.Email, upstreamModel, len(b64Data))
+		if usageTracker != nil {
+			tu := &TokenUsage{
+				Input:  100,
+				Output: 1000,
+				Total:  1100,
+			}
+			usageTracker.Record(upstreamModel, acc.Email, keyName, tu)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	http.Error(w, `{"error":{"message":"image generation failed across all accounts","type":"server_error"}}`, http.StatusBadGateway)
+}
+
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	models := []string{
 		"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
@@ -2050,6 +2291,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		"gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
 		"gemini-3-flash-agent", "gemini-pro-agent", "gemini-3.1-pro-low",
 		"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
+		"gemini-3.1-flash-image", "imagen-3", "dall-e-3",
 	} // live-tested 2026-08-28/09-02: 3.8-tiered verified live (2026-09-02, not yet in fetchAvailableModels list but callable)
 	data := []map[string]interface{}{}
 	for _, m := range models {
@@ -2085,6 +2327,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", handleChat)
+	mux.HandleFunc("/v1/images/generations", handleImagesGenerations)
 	mux.HandleFunc("/v1/models", handleModels)
 	mux.HandleFunc("/health", handleHealth)
 	dash := func(w http.ResponseWriter, r *http.Request) {
