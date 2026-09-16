@@ -126,6 +126,40 @@ button.test:disabled{opacity:.5; cursor:wait}
       <div class="stat"><div class="v" id="u-tot">0</div><div class="k">total token</div></div>
     </div>
 
+    <!-- RECENT REQUESTS (9router style) -->
+    <div class="recent-card" style="background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin:20px 0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px">
+        <div style="display:flex; align-items:center; gap:8px">
+          <span style="font-size:12px; font-weight:700; color:var(--dim); text-transform:uppercase; letter-spacing:1px">RECENT REQUESTS</span>
+          <span id="recent-count" class="badge" style="background:var(--panel2); color:var(--lime); font-size:11px">0</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px">
+          <input id="recent-filter" placeholder="filter model / akun / key..." oninput="renderRecentTable()" style="background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--tx); padding:4px 8px; font-size:11px; width:180px">
+          <select id="recent-limit" onchange="loadUsage(1)" style="background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--tx); padding:4px 8px; font-size:11px">
+            <option value="25">25 requests</option>
+            <option value="50" selected>50 requests</option>
+            <option value="100">100 requests</option>
+            <option value="200">200 requests</option>
+          </select>
+        </div>
+      </div>
+      <div style="max-height:460px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; background:var(--bg)">
+        <table style="width:100%; border-collapse:collapse; font-size:12px; border:none; background:transparent">
+          <thead style="position:sticky; top:0; background:var(--panel2); z-index:2">
+            <tr>
+              <th style="width:24px; padding:8px 6px 8px 12px"></th>
+              <th style="padding:8px 12px; text-align:left; font-size:11px; text-transform:uppercase; color:var(--dim); letter-spacing:1px">Model</th>
+              <th style="padding:8px 12px; text-align:right; font-size:11px; text-transform:uppercase; color:var(--dim); letter-spacing:1px">In / Out</th>
+              <th style="padding:8px 12px; text-align:right; font-size:11px; text-transform:uppercase; color:var(--dim); letter-spacing:1px; width:100px">When</th>
+            </tr>
+          </thead>
+          <tbody id="recent-rows">
+            <tr><td colspan="4" class="mut" style="text-align:center; padding:18px">Memuat data request...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div style="font-size:13px;font-weight:700;color:var(--tx);margin:16px 0 8px">Penggunaan per Model (<span id="u-model-tf" style="color:var(--lime)">today</span>):</div>
     <table id="usage-model-table">
       <thead><tr><th>model</th><th>request</th><th>input token</th><th>output token</th><th>cached token</th><th>total token</th></tr></thead>
@@ -665,7 +699,8 @@ async function loadUsage(force=0) {
   if (force) $('umeta').textContent = 'fetching…';
   try {
     const tz = new Date().getTimezoneOffset();
-    const r = await api('/admin/usage?tz=' + encodeURIComponent(tz));
+    const limit = $('recent-limit')?.value || 50;
+    const r = await api('/admin/usage?tz=' + encodeURIComponent(tz) + '&limit=' + encodeURIComponent(limit));
     const d = await r.json();
     currentUsageData = d;
     const when = new Date(d.generatedAt).toLocaleTimeString();
@@ -684,6 +719,64 @@ function setUsageTf(tf) {
   renderUsage();
 }
 
+function fmtAgo(ts) {
+  if (!ts) return '-';
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 5) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function renderRecentTable() {
+  if (!currentUsageData || !currentUsageData.recent) return;
+  const filter = ($('recent-filter')?.value || '').trim().toLowerCase();
+  let list = currentUsageData.recent;
+  if (filter) {
+    list = list.filter(r =>
+      (r.model && r.model.toLowerCase().includes(filter)) ||
+      (r.acc && r.acc.toLowerCase().includes(filter)) ||
+      (r.key && r.key.toLowerCase().includes(filter))
+    );
+  }
+  if ($('recent-count')) $('recent-count').textContent = list.length;
+  if (list.length === 0) {
+    $('recent-rows').innerHTML = '<tr><td colspan="4" class="mut" style="text-align:center;padding:18px">Belum ada request terbaru</td></tr>';
+    return;
+  }
+  $('recent-rows').innerHTML = list.map(r => {
+    const isOk = !r.status || r.status === 200;
+    const dotColor = isOk ? '#22c55e' : '#ef4444';
+    const whenStr = fmtAgo(r.ts);
+    const fullDate = new Date(r.ts * 1000).toLocaleString('id-ID');
+    const latStr = r.latency ? ` · ${(r.latency/1000).toFixed(2)}s` : '';
+    const accShort = r.acc ? esc(r.acc.split('@')[0]) : '';
+    const keyStr = r.key ? esc(r.key) : 'default';
+    const cacheBadge = r.cache > 0 ? `<span style="color:var(--amber);font-size:10px;margin-left:4px" title="cached: ${fmtNum(r.cache)}">⚡${fmtCompact(r.cache)}</span>` : '';
+
+    return `
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04);transition:background 0.15s" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
+        <td style="padding:8px 6px 8px 12px;vertical-align:middle;width:24px">
+          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${dotColor};box-shadow:0 0 5px ${dotColor}88"></span>
+        </td>
+        <td style="padding:8px 12px;vertical-align:middle">
+          <div style="font-weight:700;color:var(--tx);font-family:inherit">${esc(r.model)}</div>
+          <div style="font-size:10px;color:var(--dim)">${keyStr} · <span style="opacity:0.8">${accShort}</span>${latStr}</div>
+        </td>
+        <td style="padding:8px 12px;text-align:right;white-space:nowrap;vertical-align:middle">
+          <span style="color:#f97316;font-weight:700">${fmtNum(r.inp)}↑</span>
+          <span style="color:#22c55e;font-weight:700;margin-left:8px">${fmtNum(r.out)}↓</span>
+          ${cacheBadge}
+        </td>
+        <td style="padding:8px 12px;text-align:right;color:var(--dim);white-space:nowrap;vertical-align:middle" title="${fullDate}${latStr}">
+          ${whenStr}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
 function renderUsage() {
   if (!currentUsageData || !currentUsageData.timeframes) return;
   const tf = currentUsageData.timeframes[currentUsageTf] || {
@@ -696,6 +789,9 @@ function renderUsage() {
   $('u-cache').innerHTML = `${fmtCompact(tf.cachedTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.cachedTokens)})</span>`;
   $('u-tot').innerHTML = `${fmtCompact(tf.totalTokens)} <span style="font-size:12px;font-weight:400;color:var(--dim)">(${fmtNum(tf.totalTokens)})</span>`;
   $('u-model-tf').textContent = currentUsageTf;
+
+  // Render recent requests table
+  renderRecentTable();
 
   // Render per-model table
   const modelEntries = Object.entries(tf.byModel || {}).sort((a,b) => b[1].requests - a[1].requests);

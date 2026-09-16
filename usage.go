@@ -23,14 +23,16 @@ type TokenUsage struct {
 
 // UsageRecord is a single persistent record written to usage.jsonl.
 type UsageRecord struct {
-	Timestamp int64  `json:"ts"`    // Unix epoch seconds
-	Model     string `json:"model"` // e.g. "gemini-3.8-flash-high"
-	Account   string `json:"acc"`   // Google account email
-	Key       string `json:"key"`   // API Key name or "default"
-	Input     int    `json:"inp"`   // Prompt tokens
-	Output    int    `json:"out"`   // Completion tokens
-	Cached    int    `json:"cache"` // Cached prompt tokens
-	Total     int    `json:"tot"`   // Total tokens
+	Timestamp int64  `json:"ts"`                // Unix epoch seconds
+	Model     string `json:"model"`             // e.g. "gemini-3.8-flash-high"
+	Account   string `json:"acc"`               // Google account email
+	Key       string `json:"key"`               // API Key name or "default"
+	Input     int    `json:"inp"`               // Prompt tokens
+	Output    int    `json:"out"`               // Completion tokens
+	Cached    int    `json:"cache"`             // Cached prompt tokens
+	Total     int    `json:"tot"`               // Total tokens
+	LatencyMs int64  `json:"latency,omitempty"` // Duration in ms
+	Status    int    `json:"status,omitempty"`  // HTTP status code (default 200)
 }
 
 // PeriodSummary summarizes metrics over a specific timeframe (today, 1hari, etc.).
@@ -67,6 +69,7 @@ type UsageReport struct {
 	GeneratedAt string                    `json:"generatedAt"`
 	Timeframes  map[string]*PeriodSummary `json:"timeframes"`
 	Daily       []*DaySummary             `json:"daily"`
+	Recent      []UsageRecord             `json:"recent"`
 }
 
 type UsageTracker struct {
@@ -182,12 +185,15 @@ func (ut *UsageTracker) persistAll() error {
 }
 
 // Record appends a completed chat request to memory and disk.
-func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage) {
+func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage, latencyMs int64, status int) {
 	if ut == nil || u == nil {
 		return
 	}
 	if key == "" {
 		key = "default"
+	}
+	if status == 0 {
+		status = 200
 	}
 	rec := UsageRecord{
 		Timestamp: time.Now().Unix(),
@@ -198,6 +204,8 @@ func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage) {
 		Output:    u.Output,
 		Cached:    u.Cached,
 		Total:     u.Total,
+		LatencyMs: latencyMs,
+		Status:    status,
 	}
 	if rec.Total == 0 {
 		rec.Total = rec.Input + rec.Output
@@ -235,7 +243,7 @@ func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage) {
 }
 
 // GetReport computes aggregated metrics for today, 1hari, 7hari, 30hari, 60hari.
-func (ut *UsageTracker) GetReport(tzOffsetMin int) *UsageReport {
+func (ut *UsageTracker) GetReport(tzOffsetMin int, limitRecent int) *UsageReport {
 	// Determine user location based on tzOffsetMin (e.g. -420 for UTC+7)
 	// Fallback to WIB (UTC+7) if not provided.
 	var loc *time.Location
@@ -377,10 +385,29 @@ func (ut *UsageTracker) GetReport(tzOffsetMin int) *UsageReport {
 		return dailyList[i].Date > dailyList[j].Date
 	})
 
+	// Recent records (newest first)
+	n := len(ut.records)
+	recentLimit := limitRecent
+	if recentLimit <= 0 {
+		recentLimit = 50
+	}
+	if n < recentLimit {
+		recentLimit = n
+	}
+	recent := make([]UsageRecord, 0, recentLimit)
+	for i := n - 1; i >= n-recentLimit; i-- {
+		rec := ut.records[i]
+		if rec.Status == 0 {
+			rec.Status = 200
+		}
+		recent = append(recent, rec)
+	}
+
 	return &UsageReport{
 		GeneratedAt: nowInLoc.Format(time.RFC3339),
 		Timeframes:  periods,
 		Daily:       dailyList,
+		Recent:      recent,
 	}
 }
 
@@ -403,8 +430,17 @@ func handleUsage(w http.ResponseWriter, r *http.Request) {
 	if tzStr := r.URL.Query().Get("tz"); tzStr != "" {
 		fmt.Sscanf(tzStr, "%d", &tzOffset)
 	}
+	limit := 100
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		fmt.Sscanf(lStr, "%d", &limit)
+		if limit < 1 {
+			limit = 25
+		} else if limit > 500 {
+			limit = 500
+		}
+	}
 
-	rep := usageTracker.GetReport(tzOffset)
+	rep := usageTracker.GetReport(tzOffset, limit)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rep)
 }
