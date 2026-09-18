@@ -642,22 +642,32 @@ async function loadQuota(force=0){
       if (acc.error && acc.error !== 'pending')
         return `<div class="qcard"><div class="qhead">${esc(acc.email)} <span class="badge b-off">ERR</span></div><div class="b-err">${esc(acc.error)}</div></div>`;
       const entries = Object.entries(acc.quotas||{})
-        .filter(([m,q]) => q.remainingPct >= 0)
-        .sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
+        .filter(([m,q]) => q.remainingPct >= 0);
+      const weeklyEntries = entries.filter(([m]) => m.includes('(Weekly)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
+      const modelEntries = entries.filter(([m]) => !m.includes('(Weekly)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
       const noBucket = Object.entries(acc.quotas||{}).filter(([m,q]) => q.remainingPct < 0).map(([m])=>m);
-      const modelRows = entries.map(([m,q]) => {
+
+      const renderRow = (m, q, isWeekly) => {
         const p = q.remainingPct;
-        const reset = q.resetAt ? new Date(q.resetAt).toLocaleTimeString() : '';
-        return `<div class="qrow" title="reset ${reset}">
-          <div class="qmodel">${esc(m)}</div>
-          <div class="qbar"><div class="qfill" style="width:${p.toFixed(1)}%;background:${barColor(p)}"></div></div>
-          <div class="qpct" style="color:${barColor(p)}">${p.toFixed(1)}%</div></div>`;
-      }).join('') + (noBucket.length ? `<div class="mut" style="margin-top:6px;font-size:11px">tanpa bucket: ${esc(noBucket.join(', '))}</div>` : '');
+        const reset = q.resetAt ? new Date(q.resetAt).toLocaleString('id-ID') : '';
+        const bg = isWeekly ? 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:6px 10px;border-radius:6px;margin-bottom:6px;' : '';
+        const icon = isWeekly ? '⚡ ' : '';
+        const fw = isWeekly ? 'font-weight:700;' : '';
+        return `<div class="qrow" style="${bg}" title="reset ${reset}">
+          <div class="qmodel" style="${fw}"><span style="color:var(--lime)">${icon}</span>${esc(m)}</div>
+          <div class="qbar" style="${isWeekly?'height:10px':''}"><div class="qfill" style="width:${p.toFixed(1)}%;background:${barColor(p)}"></div></div>
+          <div class="qpct" style="color:${barColor(p)};${fw}">${p.toFixed(1)}%</div></div>`;
+      };
+
+      const weeklyHtml = weeklyEntries.map(([m,q]) => renderRow(m, q, true)).join('');
+      const modelHtml = modelEntries.map(([m,q]) => renderRow(m, q, false)).join('');
+      const allRows = (weeklyHtml ? weeklyHtml + (modelHtml ? '<div style="margin:8px 0 4px;font-size:11px;color:var(--dim)">Model Quota Breakdown:</div>' : '') : '') + modelHtml + (noBucket.length ? `<div class="mut" style="margin-top:6px;font-size:11px">tanpa bucket: ${esc(noBucket.join(', '))}</div>` : '');
+
       return `<div class="qcard">
         <div class="qhead"><span class="email">${esc(acc.email)}</span>
           <span class="mut">${esc(acc.tier||'')}</span>
-          <span class="mut" style="margin-left:auto">${entries.length} model</span></div>
-        ${entries.length===0?'<div class="mut">tidak ada data quota</div>':modelRows}
+          <span class="mut" style="margin-left:auto">${entries.length} quota items</span></div>
+        ${entries.length===0?'<div class="mut">tidak ada data quota</div>':allRows}
       </div>`;
     }).join('');
     quotaLoaded = true;

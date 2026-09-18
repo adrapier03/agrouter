@@ -1689,7 +1689,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // models catalogue — mirrors what the antigravity pool actually serves
-const agQuotaHost = "https://cloudcode-pa.googleapis.com"
+const agQuotaHost = "https://daily-cloudcode-pa.googleapis.com"
 
 // quotaSnapshot is one account's per-model quota state.
 type quotaSnapshot struct {
@@ -1755,31 +1755,127 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 		}
 	}
 
-	// Per-model quota
+	// 1. Quota Summary: real-time weekly pooled buckets from Google Antigravity
+	var geminiFrac *float64
+	var geminiReset string
+	var claudeFrac *float64
+	var claudeReset string
+
+	uqs, err := post("/v1internal:retrieveUserQuotaSummary", map[string]interface{}{
+		"project": a.ProjectID,
+	})
+	if err == nil {
+		var groups []interface{}
+		if g, ok := uqs["groups"].([]interface{}); ok {
+			groups = g
+		}
+		for _, gv := range groups {
+			gm, ok := gv.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			gName, _ := gm["displayName"].(string)
+			buckets, _ := gm["buckets"].([]interface{})
+			for _, bv := range buckets {
+				bm, ok := bv.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				bid, _ := bm["bucketId"].(string)
+				bName, _ := bm["displayName"].(string)
+				reset, _ := bm["resetTime"].(string)
+				if disabled, _ := bm["disabled"].(bool); disabled {
+					continue
+				}
+				if bm["remainingFraction"] == nil {
+					continue
+				}
+				frac, ok := bm["remainingFraction"].(float64)
+				if !ok {
+					continue
+				}
+
+				lower := strings.ToLower(bid + " " + bName + " " + gName)
+				if strings.Contains(lower, "gemini") {
+					geminiFrac = &frac
+					geminiReset = reset
+					snap.Quotas["Gemini (Weekly)"] = modelQuota{
+						RemainingPct: frac * 100,
+						ResetAt:      reset,
+					}
+				} else if strings.Contains(lower, "claude") || strings.Contains(lower, "3p") || strings.Contains(lower, "gpt") {
+					claudeFrac = &frac
+					claudeReset = reset
+					snap.Quotas["Claude & GPT (Weekly)"] = modelQuota{
+						RemainingPct: frac * 100,
+						ResetAt:      reset,
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Per-model quota from fetchAvailableModels
 	fam, err := post("/v1internal:fetchAvailableModels", map[string]interface{}{
 		"project": a.ProjectID,
 	})
-	if err != nil {
+	if err != nil && len(snap.Quotas) == 0 {
 		return nil, err
 	}
-	models, _ := fam["models"].(map[string]interface{})
-	for mid, v := range models {
-		info, ok := v.(map[string]interface{})
-		if !ok || info["isInternal"] == true {
-			continue
+	if fam != nil {
+		models, _ := fam["models"].(map[string]interface{})
+		for mid, v := range models {
+			info, ok := v.(map[string]interface{})
+			if !ok || info["isInternal"] == true {
+				continue
+			}
+			qi, _ := info["quotaInfo"].(map[string]interface{})
+			reset, _ := qi["resetTime"].(string)
+			var modelFrac *float64
+			if qi != nil && qi["remainingFraction"] != nil {
+				if f, ok := qi["remainingFraction"].(float64); ok {
+					modelFrac = &f
+				}
+			}
+
+			isGemini := strings.HasPrefix(mid, "gemini-")
+			is3P := strings.HasPrefix(mid, "claude-") || strings.HasPrefix(mid, "gpt-")
+
+			var finalPct float64 = -1
+			finalReset := reset
+
+			if isGemini && geminiFrac != nil {
+				finalPct = *geminiFrac * 100
+				if geminiReset != "" {
+					finalReset = geminiReset
+				}
+				if modelFrac != nil && (*modelFrac*100) < finalPct {
+					finalPct = *modelFrac * 100
+				}
+			} else if is3P && claudeFrac != nil {
+				finalPct = *claudeFrac * 100
+				if claudeReset != "" {
+					finalReset = claudeReset
+				}
+				if modelFrac != nil && (*modelFrac*100) < finalPct {
+					finalPct = *modelFrac * 100
+				}
+			} else if modelFrac != nil {
+				finalPct = *modelFrac * 100
+			}
+
+			if finalPct >= 0 {
+				snap.Quotas[mid] = modelQuota{
+					RemainingPct: finalPct,
+					ResetAt:      finalReset,
+				}
+			} else {
+				snap.Quotas[mid] = modelQuota{
+					RemainingPct: -1,
+					ResetAt:      finalReset,
+				}
+			}
 		}
-		qi, ok := info["quotaInfo"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		frac, _ := qi["remainingFraction"].(float64)
-		reset, _ := qi["resetTime"].(string)
-		if qi["remainingFraction"] == nil {
-			// model listed but no quota bucket for this tier — not "0% left"
-			snap.Quotas[mid] = modelQuota{RemainingPct: -1, ResetAt: reset}
-			continue
-		}
-		snap.Quotas[mid] = modelQuota{RemainingPct: frac * 100, ResetAt: reset}
 	}
 	return snap, nil
 }
