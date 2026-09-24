@@ -346,6 +346,7 @@ var levelBudget = map[string]int{"low": 1024, "medium": 8192, "high": 24576}
 // budget nil = don't send thinkingConfig at all.
 func resolveUpstreamModel(m string) (string, *int) {
 	m = strings.TrimPrefix(m, "ag/")
+	m = strings.TrimPrefix(m, "agr/")
 	if s, ok := modelSynonym[m]; ok {
 		return s, nil
 	}
@@ -410,7 +411,20 @@ func cleanSchemaNode(node interface{}) interface{} {
 				}
 			}
 		}
-		// 3. Recurse properties
+		// 3. Convert anyOf to oneOf for Anthropic Claude/Vertex JSON Schema draft 2020-12 compatibility
+		// Antigravity's Claude adapter rejects `anyOf` with 400 (tools.N.custom.input_schema invalid).
+		// Converting `anyOf` -> `oneOf` passes validation on both Gemini and Claude.
+		if anyOf, exists := v["anyOf"]; exists {
+			v["oneOf"] = cleanSchemaNode(anyOf)
+			delete(v, "anyOf")
+		}
+		if oneOf, exists := v["oneOf"]; exists {
+			v["oneOf"] = cleanSchemaNode(oneOf)
+		}
+		if allOf, exists := v["allOf"]; exists {
+			v["allOf"] = cleanSchemaNode(allOf)
+		}
+		// 4. Recurse properties
 		if props, exists := v["properties"]; exists {
 			if propMap, ok := props.(map[string]interface{}); ok {
 				for k, p := range propMap {
@@ -418,7 +432,7 @@ func cleanSchemaNode(node interface{}) interface{} {
 				}
 			}
 		}
-		// 4. Recurse items
+		// 5. Recurse items
 		if items, exists := v["items"]; exists {
 			v["items"] = cleanSchemaNode(items)
 		}
