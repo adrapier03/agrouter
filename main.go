@@ -188,6 +188,11 @@ type agTool struct {
 	FunctionDeclarations []agFuncDecl `json:"functionDeclarations"`
 }
 
+type agSafetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
+}
+
 // agPayload is the WIRE format for cloudcode-pa v1internal: top-level
 // project + model, with the Gemini-style body nested under "request"
 // (9router chunks/318.js transformRequest).
@@ -199,7 +204,8 @@ type agPayload struct {
 		SystemInstruction *struct {
 			Parts []agPart `json:"parts"`
 		} `json:"systemInstruction,omitempty"`
-		Tools            []agTool `json:"tools,omitempty"`
+		Tools            []agTool          `json:"tools,omitempty"`
+		SafetySettings   []agSafetySetting `json:"safetySettings,omitempty"`
 		GenerationConfig struct {
 			MaxOutputTokens    *int     `json:"maxOutputTokens,omitempty"`
 			Temperature        *float64 `json:"temperature,omitempty"`
@@ -549,6 +555,13 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 				Parameters:  sanitizeSchema(t.Function.Parameters),
 			}}})
 		}
+	}
+	ag.Request.SafetySettings = []agSafetySetting{
+		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_NONE"},
+		{Category: "HARM_CATEGORY_CIVIC_INTEGRITY", Threshold: "BLOCK_NONE"},
 	}
 	if o.MaxTokens != nil {
 		mt := *o.MaxTokens
