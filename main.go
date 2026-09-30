@@ -542,10 +542,18 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 			})
 		}
 	}
+	noLatexRule := `
+
+CRITICAL FORMATTING INSTRUCTION: Do NOT use LaTeX math syntax (such as \xrightarrow, \rightarrow, \text{...}, \times, $, or $$) for arrows, transitions, diagrams, formulas, or formatting. The client interface is Discord which does not support LaTeX rendering. Always use plain Unicode characters and standard Markdown (e.g. ──(label)──>, ➔, →, ×, ≤, ≥, etc.) so that your output renders cleanly without raw LaTeX markup.`
 	if sys.Len() > 0 {
+		sys.WriteString(noLatexRule)
 		ag.Request.SystemInstruction = &struct {
 			Parts []agPart `json:"parts"`
 		}{Parts: []agPart{{Text: sys.String()}}}
+	} else {
+		ag.Request.SystemInstruction = &struct {
+			Parts []agPart `json:"parts"`
+		}{Parts: []agPart{{Text: strings.TrimSpace(noLatexRule)}}}
 	}
 	for _, t := range o.Tools {
 		if t.Type == "function" {
@@ -690,9 +698,153 @@ type agStreamChunk struct {
 	UsageMetadata *agUsageMetadata `json:"usageMetadata,omitempty"`
 }
 
+
+var (
+	reBlockMath  = regexp.MustCompile(`\$\$([^\$]+)\$\$`)
+	reInlineMath = regexp.MustCompile(`\$([^\$\n]*\\[^\$\n]*)\$`)
+	reXArrow     = regexp.MustCompile(`\\xrightarrow(?:\[([^\]]*)\])?\{(?:\s*\\text\{([^\}]+)\}\s*|([^\}]+))\}`)
+	reText       = regexp.MustCompile(`\\text\{([^\}]+)\}`)
+	reMathBold   = regexp.MustCompile(`\\mathbf\{([^\}]+)\}`)
+	reMathIt     = regexp.MustCompile(`\\mathit\{([^\}]+)\}`)
+	reBoxed      = regexp.MustCompile(`\\boxed\{([^\}]+)\}`)
+	reEscapedSym = regexp.MustCompile(`\\([#\$%&_])`)
+)
+
+func cleanLatex(s string) string {
+	if !strings.Contains(s, "\\") && !strings.Contains(s, "$$") {
+		return s
+	}
+
+	// 1. Strip $$...$$ and $\...$
+	s = reBlockMath.ReplaceAllString(s, "$1")
+	s = reInlineMath.ReplaceAllString(s, "$1")
+
+	// 2. \xrightarrow[sub]{super} -> ──(super)──>
+	s = reXArrow.ReplaceAllStringFunc(s, func(m string) string {
+		submatch := reXArrow.FindStringSubmatch(m)
+		label := ""
+		if len(submatch) > 2 && submatch[2] != "" {
+			label = submatch[2]
+		} else if len(submatch) > 3 && submatch[3] != "" {
+			label = submatch[3]
+		} else if len(submatch) > 1 && submatch[1] != "" {
+			label = submatch[1]
+		}
+		label = strings.TrimSpace(label)
+		label = reText.ReplaceAllString(label, "$1")
+		label = reEscapedSym.ReplaceAllString(label, "$1")
+		if label != "" {
+			return fmt.Sprintf(" ──(%s)──> ", label)
+		}
+		return " ──> "
+	})
+
+	// 3. Standard arrow commands
+	s = strings.ReplaceAll(s, `\xrightarrow`, " ──> ")
+	s = strings.ReplaceAll(s, `\longrightarrow`, " ➔ ")
+	s = strings.ReplaceAll(s, `\rightarrow`, " ➔ ")
+	s = strings.ReplaceAll(s, `\to`, " ➔ ")
+	s = strings.ReplaceAll(s, `\Longrightarrow`, " ➔ ")
+	s = strings.ReplaceAll(s, `\Rightarrow`, " ➔ ")
+	s = strings.ReplaceAll(s, `\longleftarrow`, " ⬅ ")
+	s = strings.ReplaceAll(s, `\leftarrow`, " ⬅ ")
+	s = strings.ReplaceAll(s, `\Longleftarrow`, " ⬅ ")
+	s = strings.ReplaceAll(s, `\Leftarrow`, " ⬅ ")
+
+	// 4. Mathematical symbols
+	s = strings.ReplaceAll(s, `\times`, " × ")
+	s = strings.ReplaceAll(s, `\approx`, " ≈ ")
+	s = strings.ReplaceAll(s, `\leq`, " ≤ ")
+	s = strings.ReplaceAll(s, `\le`, " ≤ ")
+	s = strings.ReplaceAll(s, `\geq`, " ≥ ")
+	s = strings.ReplaceAll(s, `\ge`, " ≥ ")
+	s = strings.ReplaceAll(s, `\neq`, " ≠ ")
+	s = strings.ReplaceAll(s, `\cdots`, "...")
+	s = strings.ReplaceAll(s, `\dots`, "...")
+	s = strings.ReplaceAll(s, `\ldots`, "...")
+	s = strings.ReplaceAll(s, `\cdot`, " · ")
+	s = strings.ReplaceAll(s, `\quad`, "  ")
+	s = strings.ReplaceAll(s, `\qquad`, "    ")
+
+	// 5. Formatting commands
+	s = reMathBold.ReplaceAllString(s, "**$1**")
+	s = reMathIt.ReplaceAllString(s, "*$1*")
+	s = reText.ReplaceAllString(s, "$1")
+	s = reBoxed.ReplaceAllString(s, "[$1]")
+	s = reEscapedSym.ReplaceAllString(s, "$1")
+
+	return s
+}
+
+type latexStreamFilter struct {
+	buf string
+}
+
+func (f *latexStreamFilter) Feed(chunk string) string {
+	f.buf += chunk
+	if !strings.Contains(f.buf, "\\") && !strings.Contains(f.buf, "$") {
+		out := f.buf
+		f.buf = ""
+		return out
+	}
+
+	braceDepth := 0
+	dollarCount := 0
+	lastSafe := -1
+
+	for i := 0; i < len(f.buf); i++ {
+		c := f.buf[i]
+		if c == '{' {
+			braceDepth++
+		} else if c == '}' {
+			if braceDepth > 0 {
+				braceDepth--
+			}
+			if braceDepth == 0 && dollarCount%2 == 0 {
+				lastSafe = i + 1
+			}
+		} else if c == '$' {
+			dollarCount++
+			if dollarCount%2 == 0 && braceDepth == 0 {
+				lastSafe = i + 1
+			}
+		} else if c == '\n' && braceDepth == 0 && dollarCount%2 == 0 {
+			lastSafe = i + 1
+		} else if c == ' ' && braceDepth == 0 && dollarCount%2 == 0 {
+			if i > 0 && f.buf[i-1] != '\\' {
+				lastSafe = i + 1
+			}
+		}
+	}
+
+	if lastSafe > 0 {
+		prefix := f.buf[:lastSafe]
+		f.buf = f.buf[lastSafe:]
+		return cleanLatex(prefix)
+	}
+
+	if len(f.buf) > 300 {
+		out := cleanLatex(f.buf)
+		f.buf = ""
+		return out
+	}
+
+	return ""
+}
+
+func (f *latexStreamFilter) Flush() string {
+	if f.buf == "" {
+		return ""
+	}
+	out := cleanLatex(f.buf)
+	f.buf = ""
+	return out
+}
+
 func sseTranslate(upstream io.Reader, model string, w io.Writer, flusher http.Flusher, approxPrompt int) (*TokenUsage, error) {
 	id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
+	latexFilter := &latexStreamFilter{}
 	sendChunk := func(delta map[string]interface{}, finish *string) error {
 		chunk := map[string]interface{}{
 			"id":      id,
@@ -729,9 +881,12 @@ func sseTranslate(upstream io.Reader, model string, w io.Writer, flusher http.Fl
 		for _, cand := range ck.Response.Candidates {
 			for _, p := range cand.Content.Parts {
 				if p.Text != "" {
-					outChars += len(p.Text)
-					if err := sendChunk(map[string]interface{}{"content": p.Text}, nil); err != nil {
-						return "", err
+					cleaned := latexFilter.Feed(p.Text)
+					if cleaned != "" {
+						outChars += len(cleaned)
+						if err := sendChunk(map[string]interface{}{"content": cleaned}, nil); err != nil {
+							return "", err
+						}
 					}
 				}
 				if p.InlineData != nil && p.InlineData.Data != "" {
@@ -742,6 +897,10 @@ func sseTranslate(upstream io.Reader, model string, w io.Writer, flusher http.Fl
 					}
 				}
 				if p.FunctionCall != nil {
+					if trailing := latexFilter.Flush(); trailing != "" {
+						outChars += len(trailing)
+						_ = sendChunk(map[string]interface{}{"content": trailing}, nil)
+					}
 					hasToolCalls = true
 					callID := p.FunctionCall.ID
 					if callID == "" {
@@ -826,6 +985,11 @@ func sseTranslate(upstream io.Reader, model string, w io.Writer, flusher http.Fl
 			}
 		}
 	}
+	if trailing := latexFilter.Flush(); trailing != "" {
+		outChars += len(trailing)
+		_ = sendChunk(map[string]interface{}{"content": trailing}, nil)
+	}
+
 	fr := "stop"
 	if hasToolCalls {
 		fr = "tool_calls"
