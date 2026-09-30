@@ -598,20 +598,35 @@ CRITICAL FORMATTING INSTRUCTION: Do NOT use LaTeX math syntax (such as \xrightar
 	// PR 3366 parity (decolua/9router): drop EVERY content whose parts end up empty —
 	// thinking-only assistant turns, blank tool results, blank user turns — otherwise
 	// Google rejects the whole request with 400 INVALID_ARGUMENT.
-	filtered := ag.Request.Contents[:0]
+	var normalized []agContent
 	for _, c := range ag.Request.Contents {
-		hasPart := false
+		var validParts []agPart
 		for _, p := range c.Parts {
 			if strings.TrimSpace(p.Text) != "" || p.InlineData != nil || p.FunctionCall != nil || p.FunctionResponse != nil {
-				hasPart = true
-				break
+				validParts = append(validParts, p)
 			}
 		}
-		if hasPart {
-			filtered = append(filtered, c)
+		if len(validParts) == 0 {
+			continue
+		}
+		// If adjacent turn has the same role, merge parts (especially model turns to prevent functionCall after model)
+		if len(normalized) > 0 && normalized[len(normalized)-1].Role == c.Role && c.Role == "model" {
+			normalized[len(normalized)-1].Parts = append(normalized[len(normalized)-1].Parts, validParts...)
+		} else {
+			normalized = append(normalized, agContent{Role: c.Role, Parts: validParts})
 		}
 	}
-	ag.Request.Contents = filtered
+
+	// Google Gemini rule: contents MUST start with role "user".
+	// If Hermes compacts/prunes early turns and leaves an assistant turn first,
+	// Google rejects with 400: "Please ensure that function call turn comes immediately after a user turn or after a function response turn."
+	if len(normalized) > 0 && normalized[0].Role != "user" {
+		normalized = append([]agContent{{
+			Role:  "user",
+			Parts: []agPart{{Text: "Continue."}},
+		}}, normalized...)
+	}
+	ag.Request.Contents = normalized
 
 	b, _ := json.Marshal(ag)
 	return b
