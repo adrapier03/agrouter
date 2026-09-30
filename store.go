@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -145,20 +146,53 @@ const (
 var (
 	agClientID     = getEnv("AG_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep"+"."+"apps.googleusercontent.com")
 	agClientSecret = getEnv("AG_CLIENT_SECRET", "GOCSPX-"+"K58FWR486LdLJ1mLB8sXC4z6qDAf")
+	agUpstreamTimeout = getEnvDuration("AGROUTER_UPSTREAM_TIMEOUT", 120*time.Second)
 )
 
-var httpClient = &http.Client{Timeout: 300 * time.Second}
+func getEnvDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	var sec int
+	if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	return def
+}
+
+var defaultTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 45*time.Second),
+}
+
+var httpClient = &http.Client{
+	Timeout:   agUpstreamTimeout,
+	Transport: defaultTransport,
+}
 
 // proxiedClient returns a client bound to the account's proxy (if any).
 func proxiedClient(a *Account) *http.Client {
 	if a.ProxyURL == "" {
 		return httpClient
 	}
-	transport := &http.Transport{}
+	transport := defaultTransport.Clone()
 	if u, err := url.Parse(a.ProxyURL); err == nil {
 		transport.Proxy = http.ProxyURL(u)
 	}
-	return &http.Client{Timeout: 300 * time.Second, Transport: transport}
+	return &http.Client{Timeout: agUpstreamTimeout, Transport: transport}
 }
 
 func (s *Store) ensureToken(a *Account) (string, error) {
@@ -218,12 +252,5 @@ func refreshGoogle(refreshToken string, client *http.Client) (string, string, er
 
 // clientFor returns an HTTP client honoring the account proxy.
 func (s *Store) clientFor(a *Account) *http.Client {
-	if a.ProxyURL == "" {
-		return httpClient
-	}
-	transport := &http.Transport{}
-	if u, err := url.Parse(a.ProxyURL); err == nil {
-		transport.Proxy = http.ProxyURL(u)
-	}
-	return &http.Client{Timeout: 300 * time.Second, Transport: transport}
+	return proxiedClient(a)
 }

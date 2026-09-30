@@ -87,6 +87,8 @@ go build -o agrouter .
 | `AGROUTER_DATA` | `/root/agrouter-data/accounts.json` | Path penyimpanan data akun & API keys |
 | `AGROUTER_USAGE` | `/root/agrouter-data/usage.jsonl` | Path log transaksi token analytics |
 | `AGROUTER_LOG` | `/var/log/apps/agrouter.log` | Path log sistem |
+| `AGROUTER_UPSTREAM_TIMEOUT` | `120s` | Batas waktu maksimal request ke Google Antigravity |
+| `AGROUTER_HEADER_TIMEOUT` | `45s` | Batas waktu respon header pertama dari upstream |
 | `AGR_ADMIN_TOKEN` | `agrouter-admin` | Token autentikasi panel dashboard `/admin` |
 | `AG_GSUITE_DIR` | `ag_gsuite` | Direktori modul otomatisasi GSuite |
 
