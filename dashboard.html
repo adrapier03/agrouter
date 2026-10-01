@@ -1061,6 +1061,7 @@ function renderRecentTable() {
   if (filter) {
     list = list.filter(r =>
       (r.model && r.model.toLowerCase().includes(filter)) ||
+      (r.combo && r.combo.toLowerCase().includes(filter)) ||
       (r.acc && r.acc.toLowerCase().includes(filter)) ||
       (r.key && r.key.toLowerCase().includes(filter))
     );
@@ -1078,6 +1079,7 @@ function renderRecentTable() {
     const latStr = r.latency ? ` · ${(r.latency/1000).toFixed(2)}s` : '';
     const accShort = r.acc ? esc(r.acc.split('@')[0]) : '';
     const keyStr = r.key ? esc(r.key) : 'default';
+    const comboBadge = r.combo ? `<span style="background:var(--panel2);border:1px solid #3a5518;color:var(--lime);font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:6px" title="Dipanggil via Combo: ${esc(r.combo)}">via ${esc(r.combo)}</span>` : '';
     const cacheBadge = r.cache > 0 ? `<span style="color:var(--amber);font-size:10px;margin-left:4px" title="cached: ${fmtNum(r.cache)}">⚡${fmtCompact(r.cache)}</span>` : '';
 
     return `
@@ -1086,7 +1088,7 @@ function renderRecentTable() {
           <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${dotColor};box-shadow:0 0 5px ${dotColor}88"></span>
         </td>
         <td style="padding:8px 12px;vertical-align:middle">
-          <div style="font-weight:700;color:var(--tx);font-family:inherit">${esc(r.model)}</div>
+          <div style="font-weight:700;color:var(--tx);font-family:inherit;display:flex;align-items:center;flex-wrap:wrap">${esc(r.model)}${comboBadge}</div>
           <div style="font-size:10px;color:var(--dim)">${keyStr} · <span style="opacity:0.8">${accShort}</span>${latStr}</div>
         </td>
         <td style="padding:8px 12px;text-align:right;white-space:nowrap;vertical-align:middle">

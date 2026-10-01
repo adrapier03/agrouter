@@ -1486,7 +1486,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 								tu, errT := sseTranslate(resp2.Body, o.Model, w, flusher, approxPrompt)
 								resp2.Body.Close()
 								if errT == nil && tu != nil && usageTracker != nil {
-									usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+									usageTracker.Record(reqModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200, comboName)
 								}
 								return
 							}
@@ -1496,7 +1496,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 							w.WriteHeader(http.StatusOK)
 							w.Write(outB)
 							if tu != nil && usageTracker != nil {
-								usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+								usageTracker.Record(reqModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200, comboName)
 							}
 							return
 						}
@@ -1553,7 +1553,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				tu, errT := sseTranslate(resp.Body, o.Model, w, flusher, approxPrompt)
 				resp.Body.Close()
 				if errT == nil && tu != nil && usageTracker != nil {
-					usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+					usageTracker.Record(reqModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200, comboName)
 				}
 				return
 			}
@@ -1563,7 +1563,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write(outB)
 			if tu != nil && usageTracker != nil {
-				usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+				usageTracker.Record(reqModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200, comboName)
 			}
 			return
 		}
@@ -2886,7 +2886,7 @@ func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 				Output: 1000,
 				Total:  1100,
 			}
-			usageTracker.Record(upstreamModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+			usageTracker.Record(upstreamModel, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200, "")
 		}
 
 		w.Header().Set("Content-Type", "application/json")

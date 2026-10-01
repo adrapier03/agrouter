@@ -245,7 +245,7 @@ func (s *Store) resolveCandidateModels(modelName string) ([]string, string) {
 			return c.resolveModelsLocked(), c.Name
 		}
 	}
-	return []string{modelName}, ""
+	return []string{m}, ""
 }
 
 func (s *Store) getCombos() []*ComboModel {

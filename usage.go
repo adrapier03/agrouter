@@ -33,6 +33,7 @@ type UsageRecord struct {
 	Total     int    `json:"tot"`               // Total tokens
 	LatencyMs int64  `json:"latency,omitempty"` // Duration in ms
 	Status    int    `json:"status,omitempty"`  // HTTP status code (default 200)
+	Combo     string `json:"combo,omitempty"`   // Virtual combo name if called via combo
 }
 
 // PeriodSummary summarizes metrics over a specific timeframe (today, 1hari, etc.).
@@ -185,7 +186,7 @@ func (ut *UsageTracker) persistAll() error {
 }
 
 // Record appends a completed chat request to memory and disk.
-func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage, latencyMs int64, status int) {
+func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage, latencyMs int64, status int, combo string) {
 	if ut == nil || u == nil {
 		return
 	}
@@ -195,6 +196,8 @@ func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage, latencyMs 
 	if status == 0 {
 		status = 200
 	}
+	model = strings.TrimPrefix(model, "ag/")
+	model = strings.TrimPrefix(model, "agr/")
 	rec := UsageRecord{
 		Timestamp: time.Now().Unix(),
 		Model:     model,
@@ -206,6 +209,7 @@ func (ut *UsageTracker) Record(model, acc, key string, u *TokenUsage, latencyMs 
 		Total:     u.Total,
 		LatencyMs: latencyMs,
 		Status:    status,
+		Combo:     combo,
 	}
 	if rec.Total == 0 {
 		rec.Total = rec.Input + rec.Output
