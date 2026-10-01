@@ -28,6 +28,11 @@ Didesain khusus untuk menggantikan solusi berbasis web framework berat (seperti 
   - Dynamic round-robin load balancing antar akun aktif.
   - Failover otomatis: jika satu akun limit (429) atau overload (503/529), router otomatis memutar ke akun berikutnya.
   - Refresh token on-demand (lead 90 detik) tanpa intervensi manual.
+- **Model Combos & Virtual Routing (`🔀 COMBOS`):**
+  - Menggabungkan beberapa model ke dalam satu nama virtual model (misal `agrouter` atau `gemini-claude-fallback`).
+  - **Strategi Fallback (Try in order):** Prioritas model pertama (misal Gemini Flash yang kencang & hemat), otomatis beralih mulus ke model cadangan (misal Claude Sonnet) jika kuota habis atau error.
+  - **Strategi Round Robin & Random:** Rotasi beban kerja antar beberapa model pilihan secara dinamis.
+  - Didaftarkan otomatis ke katalog endpoint `GET /v1/models` sehingga kompatibel langsung dengan Hermes, Cursor, Cline, dan klien OpenAI apa pun.
 - **Otomatisasi Onboarding GSuite (`ag_gsuite`):**
   - Worker headless berbasis Node.js + [CloakBrowser](https://cloakbrowser.dev) untuk login Google Workspace, menyetujui izin OAuth Antigravity, mengambil refreshToken & `projectId`, dan langsung mendaftarkan akun ke pool `agrouter`.
   - Dijalankan langsung dari dashboard admin via tombol `+ AKUN` atau via CLI.

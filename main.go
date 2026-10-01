@@ -1316,7 +1316,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	approxPrompt := estimatePromptTokens(&o)
-	upstreamModel, thinkingBudget := resolveUpstreamModel(o.Model)
+	candidateModels, comboName := store.resolveCandidateModels(o.Model)
+	if len(candidateModels) == 0 {
+		candidateModels = []string{o.Model}
+	}
 
 	// Try every distinct active account (round-robin cursor; failed ones rotate
 	// to the next account until the pool is exhausted).
@@ -1332,197 +1335,218 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"no active accounts configured"}}`, http.StatusServiceUnavailable)
 		return
 	}
-	maxAttempts := nActive
-	attempted := map[string]bool{}
-	seen400Count := 0
+
 	var lastCode int
 	var lastErrBody string
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		acc := store.pickRoundRobin()
-		if acc == nil {
-			http.Error(w, `{"error":{"message":"no active accounts configured"}}`, http.StatusServiceUnavailable)
-			return
+
+	for mIdx, reqModel := range candidateModels {
+		upstreamModel, thinkingBudget := resolveUpstreamModel(reqModel)
+		if comboName != "" {
+			slogf("[combo %s] (#%d/%d) trying model: %s (upstream: %s)", comboName, mIdx+1, len(candidateModels), reqModel, upstreamModel)
 		}
-		if attempted[acc.ID] {
-			// every active account already tried
-			break
-		}
-		attempted[acc.ID] = true
-		tok, err := store.ensureToken(acc)
-		if err != nil {
-			slogf("[attempt %d] %s token refresh failed: %v", attempt, acc.Email, err)
-			store.markError(acc, "refresh: "+err.Error())
-			continue
-		}
-		agBody := buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
-		url := agHost + "/v1internal:streamGenerateContent?alt=sse"
-		if !o.Stream {
-			url = agHost + "/v1internal:generateContent"
-		}
-		req, _ := http.NewRequest("POST", url, bytes.NewReader(agBody))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+tok)
-		// Wire-accurate identity (9router chunks/4953.js format:antigravity transport):
-		// UA "antigravity/ide/2.1.1 darwin/arm64" + body {project, model, request{...}}.
-		// Verified 200 against daily-cloudcode-pa on 2026-08-28 (GeminiCLI UA → 403 #3501).
-		req.Header.Set("User-Agent", agUA)
-		client := store.clientFor(acc)
-		resp, err := client.Do(req)
-		if err != nil {
-			slogf("[attempt %d] %s upstream error: %v", attempt, acc.Email, err)
-			store.markError(acc, err.Error())
-			lastErrBody = err.Error()
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			eb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-			resp.Body.Close()
-			lastCode, lastErrBody = resp.StatusCode, string(eb)
-			if resp.StatusCode == 400 {
-				_ = os.WriteFile("/tmp/last_ag_400_req.json", agBody, 0644)
-				_ = os.WriteFile("/tmp/last_ag_400_err.json", eb, 0644)
+
+		maxAttempts := nActive
+		attempted := map[string]bool{}
+		seen400Count := 0
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			acc := store.pickRoundRobin()
+			if acc == nil {
+				break
 			}
-			slogf("[attempt %d] %s upstream %d: %.500s", attempt, acc.Email, resp.StatusCode, lastErrBody)
-
-			// 404 NOT_FOUND = Model does not exist upstream on Antigravity.
-			// Rotating accounts cannot fix an unknown model name.
-			// Fail-fast immediately and do NOT taint account error status!
-			if resp.StatusCode == http.StatusNotFound {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				fmt.Fprintf(w, `{"error":{"message":"Model %q not found upstream on Antigravity (Requested entity was not found)","type":"invalid_request_error","code":"model_not_found"}}`, o.Model)
-				return
+			if attempted[acc.ID] {
+				// every active account already tried
+				break
 			}
-
-			store.markError(acc, fmt.Sprintf("%d: %.120s", resp.StatusCode, lastErrBody))
-
-			isQuotaExhausted := resp.StatusCode == 429 && (strings.Contains(lastErrBody, "QUOTA_EXHAUSTED") ||
-				strings.Contains(lastErrBody, "RESOURCE_EXHAUSTED") ||
-				strings.Contains(lastErrBody, "Individual quota reached") ||
-				strings.Contains(lastErrBody, "check quota") ||
-				strings.Contains(lastErrBody, "exceeded your current quota") ||
-				strings.Contains(lastErrBody, "Resets in"))
-
-			if isQuotaExhausted && store.isAutoDeleteDepleted() {
-				if store.removeAccount(acc.ID) {
-					slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
+			attempted[acc.ID] = true
+			tok, err := store.ensureToken(acc)
+			if err != nil {
+				slogf("[attempt %d] %s token refresh failed: %v", attempt, acc.Email, err)
+				store.markError(acc, "refresh: "+err.Error())
+				continue
+			}
+			agBody := buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
+			url := agHost + "/v1internal:streamGenerateContent?alt=sse"
+			if !o.Stream {
+				url = agHost + "/v1internal:generateContent"
+			}
+			req, _ := http.NewRequest("POST", url, bytes.NewReader(agBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+tok)
+			// Wire-accurate identity (9router chunks/4953.js format:antigravity transport):
+			// UA "antigravity/ide/2.1.1 darwin/arm64" + body {project, model, request{...}}.
+			// Verified 200 against daily-cloudcode-pa on 2026-08-28 (GeminiCLI UA → 403 #3501).
+			req.Header.Set("User-Agent", agUA)
+			client := store.clientFor(acc)
+			resp, err := client.Do(req)
+			if err != nil {
+				slogf("[attempt %d] %s upstream error: %v", attempt, acc.Email, err)
+				store.markError(acc, err.Error())
+				lastErrBody = err.Error()
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				eb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+				resp.Body.Close()
+				lastCode, lastErrBody = resp.StatusCode, string(eb)
+				if resp.StatusCode == 400 {
+					_ = os.WriteFile("/tmp/last_ag_400_req.json", agBody, 0644)
+					_ = os.WriteFile("/tmp/last_ag_400_err.json", eb, 0644)
 				}
-			}
+				slogf("[attempt %d] %s upstream %d: %.500s", attempt, acc.Email, resp.StatusCode, lastErrBody)
 
-			isCapacityOverload := resp.StatusCode == 503 || resp.StatusCode == 529 ||
-				strings.Contains(lastErrBody, "MODEL_CAPACITY_EXHAUSTED") ||
-				strings.Contains(lastErrBody, "OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST")
-
-			// Retry strategy:
-			// Capacity overload (503 or 400 MODEL_CAPACITY_EXHAUSTED):
-			// Give Google's edge node time to cool down (3s -> 6s).
-			if isCapacityOverload {
-				backoffs := []time.Duration{3 * time.Second, 6 * time.Second}
-				for bi, d := range backoffs {
-					time.Sleep(d)
-					req2, _ := http.NewRequest("POST", url, bytes.NewReader(agBody))
-					req2.Header.Set("Content-Type", "application/json")
-					req2.Header.Set("Authorization", "Bearer "+tok)
-					req2.Header.Set("User-Agent", agUA)
-					resp2, err2 := client.Do(req2)
-					if err2 != nil {
-						slogf("[retry %d] %s transport error: %v", bi+1, acc.Email, err2)
-						continue
+				// 404 NOT_FOUND = Model does not exist upstream on Antigravity.
+				// Rotating accounts cannot fix an unknown model name.
+				if resp.StatusCode == http.StatusNotFound {
+					if comboName != "" && mIdx < len(candidateModels)-1 {
+						slogf("[combo %s] model %s returned 404, falling back to next candidate model", comboName, reqModel)
+						break
 					}
-					if resp2.StatusCode == http.StatusOK {
-						slogf("[retry %d] %s RECOVERED after %s (capacity back)", bi+1, acc.Email, d)
-						slogf("chat OK %s model=%s acc=%s attempt=%d(retry%d)", r.RemoteAddr, o.Model, acc.Email, attempt+1, bi+1)
-						store.markUsed(acc)
-						if o.Stream {
-							w.Header().Set("Content-Type", "application/json")
-							w.Header().Set("Cache-Control", "no-cache")
-							flusher, ok2 := w.(http.Flusher)
-							if !ok2 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprintf(w, `{"error":{"message":"Model %q not found upstream on Antigravity (Requested entity was not found)","type":"invalid_request_error","code":"model_not_found"}}`, reqModel)
+					return
+				}
+
+				store.markError(acc, fmt.Sprintf("%d: %.120s", resp.StatusCode, lastErrBody))
+
+				isQuotaExhausted := resp.StatusCode == 429 && (strings.Contains(lastErrBody, "QUOTA_EXHAUSTED") ||
+					strings.Contains(lastErrBody, "RESOURCE_EXHAUSTED") ||
+					strings.Contains(lastErrBody, "Individual quota reached") ||
+					strings.Contains(lastErrBody, "check quota") ||
+					strings.Contains(lastErrBody, "exceeded your current quota") ||
+					strings.Contains(lastErrBody, "Resets in"))
+
+				if isQuotaExhausted && store.isAutoDeleteDepleted() {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
+					}
+				}
+
+				isCapacityOverload := resp.StatusCode == 503 || resp.StatusCode == 529 ||
+					strings.Contains(lastErrBody, "MODEL_CAPACITY_EXHAUSTED") ||
+					strings.Contains(lastErrBody, "OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST")
+
+				// Retry strategy:
+				// Capacity overload (503 or 400 MODEL_CAPACITY_EXHAUSTED):
+				// Give Google's edge node time to cool down (3s -> 6s).
+				if isCapacityOverload {
+					backoffs := []time.Duration{3 * time.Second, 6 * time.Second}
+					for bi, d := range backoffs {
+						time.Sleep(d)
+						req2, _ := http.NewRequest("POST", url, bytes.NewReader(agBody))
+						req2.Header.Set("Content-Type", "application/json")
+						req2.Header.Set("Authorization", "Bearer "+tok)
+						req2.Header.Set("User-Agent", agUA)
+						resp2, err2 := client.Do(req2)
+						if err2 != nil {
+							slogf("[retry %d] %s transport error: %v", bi+1, acc.Email, err2)
+							continue
+						}
+						if resp2.StatusCode == http.StatusOK {
+							slogf("[retry %d] %s RECOVERED after %s (capacity back)", bi+1, acc.Email, d)
+							slogf("chat OK %s model=%s (req=%s) acc=%s attempt=%d(retry%d)", r.RemoteAddr, reqModel, o.Model, acc.Email, attempt+1, bi+1)
+							store.markUsed(acc)
+							if o.Stream {
+								w.Header().Set("Content-Type", "application/json")
+								w.Header().Set("Cache-Control", "no-cache")
+								flusher, ok2 := w.(http.Flusher)
+								if !ok2 {
+									resp2.Body.Close()
+									http.Error(w, "stream unsupported", http.StatusInternalServerError)
+									return
+								}
+								w.WriteHeader(http.StatusOK)
+								tu, errT := sseTranslate(resp2.Body, o.Model, w, flusher, approxPrompt)
 								resp2.Body.Close()
-								http.Error(w, "stream unsupported", http.StatusInternalServerError)
+								if errT == nil && tu != nil && usageTracker != nil {
+									usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+								}
 								return
 							}
-							w.WriteHeader(http.StatusOK)
-							tu, errT := sseTranslate(resp2.Body, o.Model, w, flusher, approxPrompt)
+							nb2, _ := io.ReadAll(resp2.Body)
 							resp2.Body.Close()
-							if errT == nil && tu != nil && usageTracker != nil {
+							tu, outB := nonStreamResponse(nb2, o.Model, approxPrompt)
+							w.WriteHeader(http.StatusOK)
+							w.Write(outB)
+							if tu != nil && usageTracker != nil {
 								usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
 							}
 							return
 						}
-						nb2, _ := io.ReadAll(resp2.Body)
+						eb2, _ := io.ReadAll(io.LimitReader(resp2.Body, 2048))
 						resp2.Body.Close()
-						tu, outB := nonStreamResponse(nb2, o.Model, approxPrompt)
-						w.WriteHeader(http.StatusOK)
-						w.Write(outB)
-						if tu != nil && usageTracker != nil {
-							usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+						lastCode, lastErrBody = resp2.StatusCode, string(eb2)
+						slogf("[retry %d] %s still %d", bi+1, acc.Email, resp2.StatusCode)
+						stillCapacity := resp2.StatusCode == 503 || resp2.StatusCode == 529 ||
+							strings.Contains(lastErrBody, "MODEL_CAPACITY_EXHAUSTED") ||
+							strings.Contains(lastErrBody, "OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST")
+						if !stillCapacity {
+							break // different error class → leave to outer rotation
 						}
+					}
+					continue // rotate to next account after same-account retries exhausted
+				}
+
+				// True 400 errors (schema/syntax): rotate to other accounts first.
+				// Only surface if at least 4 accounts (or all active) consistently reject it.
+				if resp.StatusCode == 400 && !isCapacityOverload {
+					seen400Count++
+					threshold := 4
+					if nActive < threshold {
+						threshold = nActive
+					}
+					if seen400Count >= threshold {
+						if comboName != "" && mIdx < len(candidateModels)-1 {
+							slogf("[combo %s] model %s rejected 400, falling back to next candidate model", comboName, reqModel)
+							break
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(resp.StatusCode)
+						fmt.Fprintf(w, `{"error":{"message":"upstream 400 after retry: %.400s"}}`, lastErrBody)
+						slogf("chat 400-surfaced %s model=%s (payload rejected by %d accounts)", r.RemoteAddr, reqModel, seen400Count)
 						return
 					}
-					eb2, _ := io.ReadAll(io.LimitReader(resp2.Body, 2048))
-					resp2.Body.Close()
-					lastCode, lastErrBody = resp2.StatusCode, string(eb2)
-					slogf("[retry %d] %s still %d", bi+1, acc.Email, resp2.StatusCode)
-					stillCapacity := resp2.StatusCode == 503 || resp2.StatusCode == 529 ||
-						strings.Contains(lastErrBody, "MODEL_CAPACITY_EXHAUSTED") ||
-						strings.Contains(lastErrBody, "OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST")
-					if !stillCapacity {
-						break // different error class → leave to outer rotation
-					}
 				}
-				continue // rotate to next account after same-account retries exhausted
+				continue
 			}
 
-			// True 400 errors (schema/syntax): rotate to other accounts first.
-			// Only surface if at least 4 accounts (or all active) consistently reject it.
-			if resp.StatusCode == 400 && !isCapacityOverload {
-				seen400Count++
-				threshold := 4
-				if nActive < threshold {
-					threshold = nActive
-				}
-				if seen400Count >= threshold {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(resp.StatusCode)
-					fmt.Fprintf(w, `{"error":{"message":"upstream 400 after retry: %.400s"}}`, lastErrBody)
-					slogf("chat 400-surfaced %s model=%s (payload rejected by %d accounts)", r.RemoteAddr, o.Model, seen400Count)
+			// Success — stream it out.
+			store.markUsed(acc)
+			slogf("chat OK %s model=%s (req=%s) acc=%s attempt=%d", r.RemoteAddr, reqModel, o.Model, acc.Email, attempt+1)
+			w.Header().Set("Content-Type", "application/json")
+			if o.Stream {
+				w.Header().Set("Cache-Control", "no-cache")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					resp.Body.Close()
+					http.Error(w, "stream unsupported", http.StatusInternalServerError)
 					return
 				}
-			}
-			continue
-		}
-
-		// Success — stream it out.
-		store.markUsed(acc)
-		slogf("chat OK %s model=%s acc=%s attempt=%d", r.RemoteAddr, o.Model, acc.Email, attempt+1)
-		w.Header().Set("Content-Type", "application/json")
-		if o.Stream {
-			w.Header().Set("Cache-Control", "no-cache")
-			flusher, ok := w.(http.Flusher)
-			if !ok {
+				w.WriteHeader(http.StatusOK)
+				tu, errT := sseTranslate(resp.Body, o.Model, w, flusher, approxPrompt)
 				resp.Body.Close()
-				http.Error(w, "stream unsupported", http.StatusInternalServerError)
+				if errT == nil && tu != nil && usageTracker != nil {
+					usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+				}
 				return
 			}
-			w.WriteHeader(http.StatusOK)
-			tu, errT := sseTranslate(resp.Body, o.Model, w, flusher, approxPrompt)
+			nb, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if errT == nil && tu != nil && usageTracker != nil {
+			tu, outB := nonStreamResponse(nb, o.Model, approxPrompt)
+			w.WriteHeader(http.StatusOK)
+			w.Write(outB)
+			if tu != nil && usageTracker != nil {
 				usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
 			}
 			return
 		}
-		nb, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		tu, outB := nonStreamResponse(nb, o.Model, approxPrompt)
-		w.WriteHeader(http.StatusOK)
-		w.Write(outB)
-		if tu != nil && usageTracker != nil {
-			usageTracker.Record(o.Model, acc.Email, keyName, tu, time.Since(startReq).Milliseconds(), 200)
+
+		if comboName != "" && mIdx < len(candidateModels)-1 {
+			slogf("[combo %s] model %s failed across all accounts, falling back to next candidate model", comboName, reqModel)
+			continue
 		}
-		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)
 	fmt.Fprintf(w, `{"error":{"message":"all attempts failed","last_status":%d,"last_error":%.600s}}`, lastCode, lastErrBody)
@@ -1950,6 +1974,68 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 		"ok":     true,
 		"pruned": pruned,
 	})
+}
+
+func handleCombos(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"combos": store.getCombos(),
+		})
+	case http.MethodPost:
+		var in struct {
+			ID       string   `json:"id"`
+			Name     string   `json:"name"`
+			Strategy string   `json:"strategy"`
+			Models   []string `json:"models"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		if in.Name == "" {
+			http.Error(w, `{"error":"nama combo tidak boleh kosong"}`, http.StatusBadRequest)
+			return
+		}
+		if len(in.Models) == 0 {
+			http.Error(w, `{"error":"pilih minimal 1 model target untuk combo"}`, http.StatusBadRequest)
+			return
+		}
+		if in.Strategy == "" {
+			in.Strategy = "fallback"
+		}
+		c := &ComboModel{
+			ID:       in.ID,
+			Name:     in.Name,
+			Strategy: in.Strategy,
+			Models:   in.Models,
+		}
+		if err := store.upsertCombo(c); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		slogf("[combo] Combo %q saved (strategy: %s, models: %v)", c.Name, c.Strategy, c.Models)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    true,
+			"combo": c,
+		})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, `{"error":"id parameter required"}`, http.StatusBadRequest)
+			return
+		}
+		if store.deleteCombo(id) {
+			slogf("[combo] Combo %q deleted", id)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		} else {
+			http.Error(w, `{"error":"combo not found"}`, http.StatusNotFound)
+		}
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
 }
 
 // probeModel sends a tiny generateContent to verify the account end-to-end.
@@ -2699,6 +2785,15 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	for _, m := range models {
 		data = append(data, map[string]interface{}{"id": m, "object": "model", "owned_by": "antigravity"})
 	}
+	for _, c := range store.getCombos() {
+		data = append(data, map[string]interface{}{
+			"id":       c.Name,
+			"object":   "model",
+			"owned_by": "agrouter-combo",
+			"strategy": c.Strategy,
+			"models":   c.Models,
+		})
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"object": "list", "data": data})
 }
 
@@ -2746,6 +2841,7 @@ func main() {
 	mux.HandleFunc("/admin/accounts/batch", adminAuth(handleAccountsBatch))
 	mux.HandleFunc("/admin/accounts/prune-depleted", adminAuth(handlePruneDepleted))
 	mux.HandleFunc("/admin/settings", adminAuth(handleSettings))
+	mux.HandleFunc("/admin/combos", adminAuth(handleCombos))
 	mux.HandleFunc("/admin/quota", adminAuth(handleQuota))
 	mux.HandleFunc("/admin/usage", adminAuth(handleUsage))
 	mux.HandleFunc("/admin/keys", adminAuth(handleAPIKeys))

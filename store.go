@@ -44,14 +44,55 @@ type APIKey struct {
 	Disabled  bool   `json:"disabled,omitempty"`
 }
 
+type ComboModel struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`     // Combo model identifier (e.g. "agrouter", "combo-fast")
+	Strategy  string   `json:"strategy"` // "fallback" | "round-robin" | "random"
+	Models    []string `json:"models"`   // ordered list of models
+	CreatedAt string   `json:"createdAt"`
+	cursor    int      `json:"-"`
+}
+
+func (c *ComboModel) resolveModelsLocked() []string {
+	n := len(c.Models)
+	if n == 0 {
+		return nil
+	}
+	switch c.Strategy {
+	case "round-robin":
+		start := c.cursor % n
+		c.cursor = (c.cursor + 1) % n
+		res := make([]string, n)
+		for i := 0; i < n; i++ {
+			res[i] = c.Models[(start+i)%n]
+		}
+		return res
+	case "random":
+		shuffled := make([]string, n)
+		copy(shuffled, c.Models)
+		b := make([]byte, n)
+		rand.Read(b)
+		for i := n - 1; i > 0; i-- {
+			j := int(b[i]) % (i + 1)
+			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+		}
+		return shuffled
+	default: // "fallback"
+		res := make([]string, n)
+		copy(res, c.Models)
+		return res
+	}
+}
+
 type Store struct {
 	mu                 sync.Mutex
 	path               string
-	Accounts           []*Account `json:"accounts"`
-	AdminToken         string     `json:"adminToken,omitempty"`
-	APIKeys            []*APIKey  `json:"apiKeys,omitempty"`
-	AutoDeleteDepleted bool       `json:"autoDeleteDepleted"`
-	rr                 int        // round-robin cursor
+	Accounts           []*Account    `json:"accounts"`
+	AdminToken         string        `json:"adminToken,omitempty"`
+	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
+	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
+	Combos             []*ComboModel `json:"combos,omitempty"`
+	rr                 int           // round-robin cursor
 }
 
 func loadStore(path string) (*Store, error) {
@@ -65,6 +106,18 @@ func loadStore(path string) (*Store, error) {
 	s := &Store{path: path}
 	if err := json.Unmarshal(b, s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(s.Combos) == 0 {
+		s.Combos = []*ComboModel{
+			{
+				ID:        newID(),
+				Name:      "agrouter",
+				Strategy:  "fallback",
+				Models:    []string{"gemini-3.8-flash-high", "claude-sonnet-4-6"},
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		}
+		_ = s.save()
 	}
 	return s, nil
 }
@@ -153,6 +206,67 @@ func (s *Store) removeAccount(id string) bool {
 	for i, a := range s.Accounts {
 		if a.ID == id {
 			s.Accounts = append(s.Accounts[:i], s.Accounts[i+1:]...)
+			s.save()
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) resolveCandidateModels(modelName string) ([]string, string) {
+	m := strings.TrimPrefix(modelName, "ag/")
+	m = strings.TrimPrefix(m, "agr/")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.Combos {
+		if c.Name == m || c.Name == modelName {
+			return c.resolveModelsLocked(), c.Name
+		}
+	}
+	return []string{modelName}, ""
+}
+
+func (s *Store) getCombos() []*ComboModel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*ComboModel, len(s.Combos))
+	copy(out, s.Combos)
+	return out
+}
+
+func (s *Store) upsertCombo(c *ComboModel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.ID == "" {
+		c.ID = newID()
+	}
+	if c.CreatedAt == "" {
+		c.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if c.Strategy == "" {
+		c.Strategy = "fallback"
+	}
+	found := false
+	for i, existing := range s.Combos {
+		if existing.ID == c.ID || existing.Name == c.Name {
+			c.ID = existing.ID
+			s.Combos[i] = c
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.Combos = append(s.Combos, c)
+	}
+	return s.save()
+}
+
+func (s *Store) deleteCombo(idOrName string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.Combos {
+		if c.ID == idOrName || c.Name == idOrName {
+			s.Combos = append(s.Combos[:i], s.Combos[i+1:]...)
 			s.save()
 			return true
 		}

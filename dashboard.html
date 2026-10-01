@@ -92,6 +92,7 @@ button.test:disabled{opacity:.5; cursor:wait}
     <button class="nav-btn active" id="nav-btn-all" onclick="setNav('all')">SEMUA</button>
     <button class="nav-btn" id="nav-btn-usage" onclick="setNav('usage')">📊 USAGE</button>
     <button class="nav-btn" id="nav-btn-accounts" onclick="setNav('accounts')">👥 AKUN</button>
+    <button class="nav-btn" id="nav-btn-combos" onclick="setNav('combos')">🔀 COMBOS</button>
     <button class="nav-btn" id="nav-btn-keys" onclick="setNav('keys')">🔑 API KEYS</button>
     <button class="nav-btn" id="nav-btn-quota" onclick="setNav('quota')">⚡ QUOTA</button>
     <button class="nav-btn" id="nav-btn-console" onclick="setNav('console')">💻 CONSOLE</button>
@@ -221,6 +222,68 @@ button.test:disabled{opacity:.5; cursor:wait}
     </table>
   </div>
 
+  <!-- SECTION: COMBOS -->
+  <div id="section-combos" class="sec-block">
+    <div class="toolbar" style="margin-top:22px">
+      <div>
+        <h1><span class="ag">combos</span> <span class="mut" id="combos-meta">virtual model routing</span></h1>
+        <div class="sub">gabungkan beberapa model dengan strategi Fallback, Round Robin, atau Random</div>
+      </div>
+      <div class="right">
+        <button onclick="openComboModal()">+ COMBO</button>
+        <button onclick="loadCombos()">⟳ refresh</button>
+      </div>
+    </div>
+
+    <!-- Modal Form Tambah/Edit Combo -->
+    <div id="combo-box" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px">
+      <div style="font-weight:700;margin-bottom:12px;color:var(--tx)" id="combo-box-title">Buat Model Combo Baru</div>
+      <input type="hidden" id="combo-id">
+      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Nama Model Combo:</label>
+          <input id="combo-name" placeholder="mis. agrouter, fast-opus-fallback, dsb." style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+        </div>
+        <div style="width:260px">
+          <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Strategi Routing:</label>
+          <select id="combo-strategy" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+            <option value="fallback">Fallback (Try in order) — Rekomendasi</option>
+            <option value="round-robin">Round Robin (Rotate)</option>
+            <option value="random">Random (Acak)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-bottom:14px">
+        <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:6px">Pilih Model Target (Centang berurutan sesuai prioritas):</label>
+        <div id="combo-model-choices" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:6px;max-height:220px;overflow-y:auto;background:var(--bg);padding:10px;border-radius:6px;border:1px solid var(--line)">
+          <!-- Generated model checkboxes -->
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-top:8px">Urutan Prioritas: <span id="combo-selected-preview" style="color:var(--lime);font-weight:700">-</span></div>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <button onclick="saveCombo()" style="background:var(--lime);color:#111;font-weight:700">SIMPAN COMBO</button>
+        <button onclick="closeComboModal()" style="background:var(--panel2)">BATAL</button>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>nama model</th>
+          <th>strategi</th>
+          <th>model targets</th>
+          <th>dibuat</th>
+          <th>aksi</th>
+        </tr>
+      </thead>
+      <tbody id="combo-rows">
+        <tr><td colspan="5" class="mut" style="text-align:center">Memuat daftar combos...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <!-- SECTION: API KEYS -->
   <div id="section-keys" class="sec-block">
     <div class="toolbar" style="margin-top:22px">
@@ -287,7 +350,7 @@ async function login(){
     if (r.status === 401) { $('lerr').textContent = 'token salah'; return; }
     sessionStorage.setItem('agtok', TOK);
     $('login').style.display='none'; $('app').style.display='block';
-    load(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load, 15000); setInterval(loadUsage, 15000); setInterval(loadQuota, 60000);
+    load(); loadCombos(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load, 15000); setInterval(loadCombos, 30000); setInterval(loadUsage, 15000); setInterval(loadQuota, 60000);
   } catch(e){ $('lerr').textContent = 'gagal: '+e.message; }
 }
 
@@ -564,6 +627,167 @@ async function stopGSuiteOnboard() {
   }
 }
 
+// ---------- model combos ----------
+let availableBaseModels = [
+  "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
+  "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
+  "gemini-3-flash-agent", "gemini-pro-agent", "gemini-3.1-pro-low",
+  "gemini-3.1-flash-image", "imagen-3", "dall-e-3"
+];
+
+let selectedComboModels = [];
+
+async function loadCombos() {
+  try {
+    const r = await api('/admin/combos');
+    const d = await r.json();
+    const combos = d.combos || [];
+    $('combos-meta').textContent = `${combos.length} active combos`;
+    if (combos.length === 0) {
+      $('combo-rows').innerHTML = '<tr><td colspan="5" class="mut" style="text-align:center">Belum ada model combo. Klik "+ COMBO" untuk membuat baru.</td></tr>';
+      return;
+    }
+    $('combo-rows').innerHTML = combos.map(c => {
+      const stratBadge = c.strategy === 'fallback' 
+        ? '<span class="badge b-on" style="background:#1d2b13;color:var(--lime)">FALLBACK</span>'
+        : c.strategy === 'round-robin'
+        ? '<span class="badge" style="background:#162438;color:var(--blue);border:1px solid #204060">ROUND ROBIN</span>'
+        : '<span class="badge" style="background:#2b2210;color:var(--amber);border:1px solid #554420">RANDOM</span>';
+      
+      const modelsPill = (c.models || []).map((m, idx) => 
+        `<span style="display:inline-block;padding:2px 7px;background:var(--bg);border:1px solid var(--line);border-radius:4px;font-size:11px;margin:2px 4px 2px 0">
+          <span style="color:var(--dim);font-size:10px">#${idx+1}</span> <b style="color:var(--tx)">${esc(m)}</b>
+        </span>`
+      ).join('');
+
+      return `
+        <tr>
+          <td><b style="color:var(--tx)">${esc(c.name)}</b></td>
+          <td>${stratBadge}</td>
+          <td>${modelsPill}</td>
+          <td class="mut" style="font-size:11px">${c.createdAt ? new Date(c.createdAt).toLocaleDateString('id-ID') : '—'}</td>
+          <td>
+            <button onclick="editCombo('${esc(c.id)}')">edit</button>
+            <button class="danger" onclick="deleteCombo('${esc(c.id)}', '${esc(c.name)}')">hapus</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  } catch(e) {
+    if (e.message !== 'unauthorized') toast('combos gagal: ' + e.message, true);
+  }
+}
+
+function openComboModal(existing = null) {
+  $('combo-box').style.display = 'block';
+  $('combo-id').value = existing ? existing.id : '';
+  $('combo-name').value = existing ? existing.name : '';
+  $('combo-strategy').value = existing ? existing.strategy : 'fallback';
+  $('combo-box-title').textContent = existing ? `Edit Model Combo: ${existing.name}` : 'Buat Model Combo Baru';
+
+  selectedComboModels = existing && existing.models ? [...existing.models] : [];
+
+  renderComboModelChoices();
+  updateComboPreview();
+}
+
+function closeComboModal() {
+  $('combo-box').style.display = 'none';
+}
+
+function renderComboModelChoices() {
+  const container = $('combo-model-choices');
+  container.innerHTML = availableBaseModels.map(m => {
+    const isChecked = selectedComboModels.includes(m);
+    const orderIdx = selectedComboModels.indexOf(m);
+    const orderBadge = isChecked ? `<span style="background:var(--lime);color:#111;font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;margin-right:4px">#${orderIdx+1}</span>` : '';
+    return `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:var(--panel2)">
+        <input type="checkbox" value="${m}" ${isChecked ? 'checked' : ''} onchange="onComboModelToggle(this)">
+        ${orderBadge}
+        <span style="color:${isChecked?'var(--tx)':'var(--dim)'}">${m}</span>
+      </label>
+    `;
+  }).join('');
+}
+
+function onComboModelToggle(cb) {
+  const m = cb.value;
+  if (cb.checked) {
+    if (!selectedComboModels.includes(m)) selectedComboModels.push(m);
+  } else {
+    selectedComboModels = selectedComboModels.filter(x => x !== m);
+  }
+  renderComboModelChoices();
+  updateComboPreview();
+}
+
+function updateComboPreview() {
+  const preview = $('combo-selected-preview');
+  if (!preview) return;
+  if (selectedComboModels.length === 0) {
+    preview.innerHTML = '<span class="mut">(belum ada model yang dipilih)</span>';
+  } else {
+    preview.innerHTML = selectedComboModels.map((m, idx) => `<span style="color:var(--lime)">[#${idx+1}] ${m}</span>`).join(' ➔ ');
+  }
+}
+
+async function editCombo(id) {
+  try {
+    const r = await api('/admin/combos');
+    const d = await r.json();
+    const combo = (d.combos || []).find(c => c.id === id);
+    if (combo) openComboModal(combo);
+  } catch(e) {
+    toast('Gagal edit: ' + e.message, true);
+  }
+}
+
+async function deleteCombo(id, name) {
+  if (!confirm(`Hapus combo "${name}"?`)) return;
+  try {
+    const r = await api('/admin/combos?id=' + encodeURIComponent(id), { method: 'DELETE' });
+    const j = await r.json();
+    if (j.ok) {
+      toast(`Combo "${name}" berhasil dihapus`);
+      loadCombos();
+    }
+  } catch(e) {
+    toast('Gagal hapus combo: ' + e.message, true);
+  }
+}
+
+async function saveCombo() {
+  const id = $('combo-id').value.trim();
+  const name = $('combo-name').value.trim();
+  const strategy = $('combo-strategy').value;
+
+  if (!name) return toast('Masukkan nama model combo!', true);
+  if (selectedComboModels.length === 0) return toast('Pilih minimal 1 model target!', true);
+
+  try {
+    const r = await api('/admin/combos', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: id || undefined,
+        name,
+        strategy,
+        models: selectedComboModels
+      })
+    });
+    const j = await r.json();
+    if (!r.ok) return toast('Gagal simpan: ' + (j.error || 'error'), true);
+    toast(`Model combo "${name}" berhasil disimpan!`);
+    closeComboModal();
+    loadCombos();
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
 // ---------- api keys ----------
 async function loadKeys(){
   try {
@@ -752,7 +976,7 @@ function fmtCompact(n) {
 
 function setNav(tab) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === 'nav-btn-' + tab));
-  const sections = ['usage', 'accounts', 'keys', 'quota', 'console'];
+  const sections = ['usage', 'accounts', 'combos', 'keys', 'quota', 'console'];
   sections.forEach(s => {
     const el = $('section-' + s);
     if (!el) return;
@@ -897,7 +1121,7 @@ function renderUsage() {
   }
 }
 
-function loadAll(){ load(); loadKeys(); loadQuota(1); loadUsage(1); }
+function loadAll(){ load(); loadCombos(); loadKeys(); loadQuota(1); loadUsage(1); }
 
 async function addAccount(){
   const body = {
@@ -932,7 +1156,7 @@ async function importFile(){
 }
 
 if (TOK) { fetch('/admin/accounts', {headers:{'Authorization':'Bearer '+TOK}}).then(r => {
-  if (r.ok) { $('login').style.display='none'; $('app').style.display='block'; load(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load,15000); setInterval(loadUsage,15000); setInterval(loadQuota,60000); }
+  if (r.ok) { $('login').style.display='none'; $('app').style.display='block'; load(); loadCombos(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load,15000); setInterval(loadCombos,30000); setInterval(loadUsage,15000); setInterval(loadQuota,60000); }
   else showLogin();
 }).catch(showLogin); } else showLogin();
 </script>
