@@ -1396,6 +1396,19 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 			store.markError(acc, fmt.Sprintf("%d: %.120s", resp.StatusCode, lastErrBody))
 
+			isQuotaExhausted := resp.StatusCode == 429 && (strings.Contains(lastErrBody, "QUOTA_EXHAUSTED") ||
+				strings.Contains(lastErrBody, "RESOURCE_EXHAUSTED") ||
+				strings.Contains(lastErrBody, "Individual quota reached") ||
+				strings.Contains(lastErrBody, "check quota") ||
+				strings.Contains(lastErrBody, "exceeded your current quota") ||
+				strings.Contains(lastErrBody, "Resets in"))
+
+			if isQuotaExhausted && store.isAutoDeleteDepleted() {
+				if store.removeAccount(acc.ID) {
+					slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
+				}
+			}
+
 			isCapacityOverload := resp.StatusCode == 503 || resp.StatusCode == 529 ||
 				strings.Contains(lastErrBody, "MODEL_CAPACITY_EXHAUSTED") ||
 				strings.Contains(lastErrBody, "OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST")
@@ -1685,7 +1698,10 @@ func handleAccounts(w http.ResponseWriter, r *http.Request) {
 			out = append(out, view{a.ID, a.Email, a.Active, a.ProjectID, a.ProxyURL, a.ReqCount, a.ErrCount, a.LastErr, a.ExpiresAt})
 			_ = masked
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"accounts": out})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"accounts":           out,
+			"autoDeleteDepleted": store.AutoDeleteDepleted,
+		})
 	case http.MethodPost:
 		var in struct {
 			Email       string `json:"email"`
@@ -1859,6 +1875,80 @@ func handleAccountsBatch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok":    true,
 		"count": count,
+	})
+}
+
+func handleSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"autoDeleteDepleted": store.isAutoDeleteDepleted(),
+		})
+	case http.MethodPost:
+		var in struct {
+			AutoDeleteDepleted *bool `json:"autoDeleteDepleted"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+			return
+		}
+		if in.AutoDeleteDepleted != nil {
+			store.setAutoDeleteDepleted(*in.AutoDeleteDepleted)
+			slogf("[settings] autoDeleteDepleted set to %v", *in.AutoDeleteDepleted)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":                 true,
+			"autoDeleteDepleted": store.isAutoDeleteDepleted(),
+		})
+	default:
+		http.Error(w, `{"error":"GET or POST only"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	quotaCacheMu.Lock()
+	cachedSnaps := quotaCache
+	quotaCacheMu.Unlock()
+
+	depletedEmails := make(map[string]bool)
+	if cachedSnaps != nil {
+		for _, snap := range cachedSnaps {
+			if snap != nil {
+				if gq, ok := snap.Quotas["Gemini (Weekly)"]; ok && gq.RemainingPct == 0 {
+					depletedEmails[snap.Email] = true
+				}
+			}
+		}
+	}
+
+	store.mu.Lock()
+	var remaining []*Account
+	pruned := 0
+	for _, a := range store.Accounts {
+		isDepleted := depletedEmails[a.Email] ||
+			strings.Contains(a.LastErr, "Individual quota reached") ||
+			strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
+			strings.Contains(a.LastErr, "check quota")
+		if isDepleted {
+			pruned++
+			slogf("[prune] Akun %s dihapus", a.Email)
+		} else {
+			remaining = append(remaining, a)
+		}
+	}
+	store.Accounts = remaining
+	store.save()
+	store.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":     true,
+		"pruned": pruned,
 	})
 }
 
@@ -2132,6 +2222,14 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 			}
 			snap.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 			results[i] = snap
+
+			if store.isAutoDeleteDepleted() {
+				if gq, ok := snap.Quotas["Gemini (Weekly)"]; ok && gq.RemainingPct == 0 {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis (kuota Gemini habis 0%%)", acc.Email)
+					}
+				}
+			}
 		}(i, a)
 	}
 	wg.Wait()
@@ -2646,6 +2744,8 @@ func main() {
 	mux.HandleFunc("/admin/accounts", adminAuth(handleAccounts))
 	mux.HandleFunc("/admin/accounts/action", adminAuth(handleAccountAction))
 	mux.HandleFunc("/admin/accounts/batch", adminAuth(handleAccountsBatch))
+	mux.HandleFunc("/admin/accounts/prune-depleted", adminAuth(handlePruneDepleted))
+	mux.HandleFunc("/admin/settings", adminAuth(handleSettings))
 	mux.HandleFunc("/admin/quota", adminAuth(handleQuota))
 	mux.HandleFunc("/admin/usage", adminAuth(handleUsage))
 	mux.HandleFunc("/admin/keys", adminAuth(handleAPIKeys))

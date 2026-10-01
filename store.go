@@ -45,12 +45,13 @@ type APIKey struct {
 }
 
 type Store struct {
-	mu         sync.Mutex
-	path       string
-	Accounts   []*Account `json:"accounts"`
-	AdminToken string     `json:"adminToken,omitempty"`
-	APIKeys    []*APIKey  `json:"apiKeys,omitempty"`
-	rr         int // round-robin cursor
+	mu                 sync.Mutex
+	path               string
+	Accounts           []*Account `json:"accounts"`
+	AdminToken         string     `json:"adminToken,omitempty"`
+	APIKeys            []*APIKey  `json:"apiKeys,omitempty"`
+	AutoDeleteDepleted bool       `json:"autoDeleteDepleted"`
+	rr                 int        // round-robin cursor
 }
 
 func loadStore(path string) (*Store, error) {
@@ -131,6 +132,32 @@ func (s *Store) markError(a *Account, msg string) {
 	a.ErrCount++
 	s.mu.Unlock()
 	s.save()
+}
+
+func (s *Store) isAutoDeleteDepleted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.AutoDeleteDepleted
+}
+
+func (s *Store) setAutoDeleteDepleted(v bool) {
+	s.mu.Lock()
+	s.AutoDeleteDepleted = v
+	s.save()
+	s.mu.Unlock()
+}
+
+func (s *Store) removeAccount(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, a := range s.Accounts {
+		if a.ID == id {
+			s.Accounts = append(s.Accounts[:i], s.Accounts[i+1:]...)
+			s.save()
+			return true
+		}
+	}
+	return false
 }
 
 // =====================================================================

@@ -32,8 +32,11 @@ Didesain khusus untuk menggantikan solusi berbasis web framework berat (seperti 
   - Worker headless berbasis Node.js + [CloakBrowser](https://cloakbrowser.dev) untuk login Google Workspace, menyetujui izin OAuth Antigravity, mengambil refreshToken & `projectId`, dan langsung mendaftarkan akun ke pool `agrouter`.
   - Dijalankan langsung dari dashboard admin via tombol `+ AKUN` atau via CLI.
 - **Dashboard Admin Monospace Gelap (`/admin`):**
+  - **Auto-Prune Akun Habis (Switch ON/OFF):** Saklar otomatis untuk langsung menghapus akun yang kuota Gemini-nya habis (0%) agar pool selalu bersih.
+  - **One-Click Prune:** Tombol instan untuk membersihkan semua akun 0% sekaligus.
   - **Batch Actions:** Checkbox select-all, aktifkan massal, matikan massal, dan hapus akun terpilih.
-  - **Quota Monitor:** Menampilkan persentase sisa kuota dan waktu reset per-model untuk setiap akun.
+  - **Quota Monitor:** Menampilkan persentase sisa kuota mingguan dan waktu reset per-model untuk setiap akun.
+  - **Recent Requests Widget:** Tabel log request per-call real-time ala 9router lengkap dengan status dot, indikator in/out token (`162.845↑ 1.430↓`), cached token badge, dan latensi.
   - **Usage & Token Analytics:** Pelacak request, input token (prompt), output token (completion), cached token, dan total token untuk rentang waktu **Today, 1 Hari, 7 Hari, 30 Hari, dan 60 Hari**, lengkap dengan tabel rincian per-model dan riwayat harian.
   - **API Key Gate:** Manajemen token akses `/v1` (`agk-...`) dengan counter penggunaan.
   - **Live Console:** Stream log server real-time (SSE dengan fallback auto-polling 3s).

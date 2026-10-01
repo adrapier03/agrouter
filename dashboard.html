@@ -240,8 +240,14 @@ button.test:disabled{opacity:.5; cursor:wait}
   <!-- SECTION: QUOTA -->
   <div id="section-quota" class="sec-block">
     <div class="toolbar" style="margin-top:22px">
-      <h1><span class="ag">quota</span> <span class="mut" id="qmeta">per-model, % sisa</span></h1>
-      <div class="right"><button onclick="loadQuota(1)">⟳ refresh</button></div>
+      <div>
+        <h1><span class="ag">quota</span> <span class="mut" id="qmeta">per-model, % sisa</span></h1>
+      </div>
+      <div class="right">
+        <button id="quota-autodel-btn" onclick="toggleAutoDelete()" style="font-weight:700">⚡ Auto-Hapus: OFF</button>
+        <button onclick="pruneDepletedNow()" class="danger">🗑 Hapus Akun 0%</button>
+        <button onclick="loadQuota(1)">⟳ refresh</button>
+      </div>
     </div>
     <div id="quotas"></div>
   </div>
@@ -293,6 +299,48 @@ function toast(msg, bad=false){
   clearTimeout(t._h); t._h = setTimeout(()=>t.style.display='none', 3500);
 }
 
+let autoDeleteEnabled = false;
+
+async function toggleAutoDelete() {
+  const next = !autoDeleteEnabled;
+  try {
+    const r = await api('/admin/settings', {
+      method: 'POST',
+      body: JSON.stringify({ autoDeleteDepleted: next })
+    });
+    const j = await r.json();
+    autoDeleteEnabled = j.autoDeleteDepleted;
+    toast(autoDeleteEnabled ? '⚡ Auto-Hapus akun 0% diaktifkan (ON)' : '⚡ Auto-Hapus akun 0% dimatikan (OFF)');
+    updateAutoDeleteUI();
+    load();
+  } catch(e) {
+    toast('Gagal ubah setting: ' + e.message, true);
+  }
+}
+
+function updateAutoDeleteUI() {
+  const qBtn = $('quota-autodel-btn');
+  if (qBtn) {
+    qBtn.textContent = autoDeleteEnabled ? '⚡ Auto-Hapus: ON' : '⚡ Auto-Hapus: OFF';
+    qBtn.style.color = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';
+    qBtn.style.background = autoDeleteEnabled ? '#1d2b13' : 'var(--panel2)';
+    qBtn.style.borderColor = autoDeleteEnabled ? '#3a5518' : 'var(--line)';
+  }
+}
+
+async function pruneDepletedNow() {
+  if (!confirm('Yakin ingin MENGHAPUS SEMUA akun yang kuota Gemini-nya 0% / habis?')) return;
+  try {
+    const r = await api('/admin/accounts/prune-depleted', { method: 'POST' });
+    const j = await r.json();
+    toast(`Berhasil menghapus ${j.pruned || 0} akun yang habis.`);
+    load();
+    loadQuota(1);
+  } catch(e) {
+    toast('Gagal prune: ' + e.message, true);
+  }
+}
+
 async function load(){
   try {
     const [acc, h] = await Promise.all([api('/admin/accounts'), fetch('/health')]);
@@ -301,11 +349,22 @@ async function load(){
     const total = health.accounts, active = health.active;
     const reqs = data.accounts.reduce((s,a)=>s+a.requests,0);
     const errs = data.accounts.reduce((s,a)=>s+a.errors,0);
+    if (data.autoDeleteDepleted !== undefined) {
+      autoDeleteEnabled = data.autoDeleteDepleted;
+      updateAutoDeleteUI();
+    }
+    const autoDelColor = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';
+    const autoDelBg = autoDeleteEnabled ? '#1d2b13' : 'var(--panel)';
+    const autoDelBorder = autoDeleteEnabled ? '#3a5518' : 'var(--line)';
     $('stats').innerHTML = `
       <div class="stat ok"><div class="v">${active}/${total}</div><div class="k">aktif</div></div>
       <div class="stat"><div class="v">${reqs}</div><div class="k">requests</div></div>
       <div class="stat ${errs>0?'err':''}"><div class="v">${errs}</div><div class="k">errors</div></div>
-      <div class="stat"><div class="v">RR</div><div class="k">round-robin</div></div>`;
+      <div class="stat"><div class="v">RR</div><div class="k">round-robin</div></div>
+      <div class="stat" onclick="toggleAutoDelete()" style="cursor:pointer;border-color:${autoDelBorder};background:${autoDelBg};user-select:none" title="Klik untuk mengaktifkan / menonaktifkan Auto-Hapus akun jika kuota Gemini habis (0%)">
+        <div class="v" style="color:${autoDelColor}">${autoDeleteEnabled ? 'ON' : 'OFF'}</div>
+        <div class="k">auto-hapus 0%</div>
+      </div>`;
     $('rows').innerHTML = data.accounts.map(a => `
       <tr>
         <td style="text-align:center;vertical-align:middle"><input type="checkbox" class="acc-check" value="${a.id}" onchange="updateSelectedCount()"></td>
