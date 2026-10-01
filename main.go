@@ -1416,9 +1416,36 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					strings.Contains(lastErrBody, "exceeded your current quota") ||
 					strings.Contains(lastErrBody, "Resets in"))
 
-				if isQuotaExhausted && store.isAutoDeleteDepleted() {
-					if store.removeAccount(acc.ID) {
-						slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
+				if isQuotaExhausted {
+					autoDel, mode := store.getAutoDeleteConfig()
+					if autoDel {
+						isGem := strings.HasPrefix(upstreamModel, "gemini-")
+						isCld := strings.HasPrefix(upstreamModel, "claude-") || strings.HasPrefix(upstreamModel, "gpt-")
+
+						if mode == "both" {
+							if isCld {
+								if checkAccountDepletedByMode(acc, tok, "both") {
+									if store.removeAccount(acc.ID) {
+										slogf("[auto-prune] Akun %s dihapus otomatis (mode: both, Gemini & Claude habis)", acc.Email)
+									}
+								} else {
+									slogf("[auto-prune] Kuota Claude %s habis, tapi Gemini masih ada", acc.Email)
+								}
+							} else if isGem {
+								slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", acc.Email)
+							}
+						} else {
+							// mode == "gemini"
+							if isGem {
+								if store.removeAccount(acc.ID) {
+									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
+								}
+							} else if isCld {
+								if store.removeAccount(acc.ID) {
+									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Claude habis)", acc.Email)
+								}
+							}
+						}
 					}
 				}
 
@@ -1722,9 +1749,14 @@ func handleAccounts(w http.ResponseWriter, r *http.Request) {
 			out = append(out, view{a.ID, a.Email, a.Active, a.ProjectID, a.ProxyURL, a.ReqCount, a.ErrCount, a.LastErr, a.ExpiresAt})
 			_ = masked
 		}
+		mode := store.AutoDeleteMode
+		if mode == "" {
+			mode = "gemini"
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"accounts":           out,
 			"autoDeleteDepleted": store.AutoDeleteDepleted,
+			"autoDeleteMode":     mode,
 		})
 	case http.MethodPost:
 		var in struct {
@@ -1906,24 +1938,33 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {
 	case http.MethodGet:
+		autoDel, mode := store.getAutoDeleteConfig()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"autoDeleteDepleted": store.isAutoDeleteDepleted(),
+			"autoDeleteDepleted": autoDel,
+			"autoDeleteMode":     mode,
 		})
 	case http.MethodPost:
 		var in struct {
-			AutoDeleteDepleted *bool `json:"autoDeleteDepleted"`
+			AutoDeleteDepleted *bool   `json:"autoDeleteDepleted"`
+			AutoDeleteMode     *string `json:"autoDeleteMode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 			return
 		}
+		autoDel, mode := store.getAutoDeleteConfig()
 		if in.AutoDeleteDepleted != nil {
-			store.setAutoDeleteDepleted(*in.AutoDeleteDepleted)
-			slogf("[settings] autoDeleteDepleted set to %v", *in.AutoDeleteDepleted)
+			autoDel = *in.AutoDeleteDepleted
 		}
+		if in.AutoDeleteMode != nil && *in.AutoDeleteMode != "" {
+			mode = *in.AutoDeleteMode
+		}
+		store.setAutoDeleteConfig(autoDel, mode)
+		slogf("[settings] autoDelete set to enabled=%v, mode=%s", autoDel, mode)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":                 true,
-			"autoDeleteDepleted": store.isAutoDeleteDepleted(),
+			"autoDeleteDepleted": autoDel,
+			"autoDeleteMode":     mode,
 		})
 	default:
 		http.Error(w, `{"error":"GET or POST only"}`, http.StatusMethodNotAllowed)
@@ -1935,6 +1976,12 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 		return
 	}
+	_, defaultMode := store.getAutoDeleteConfig()
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = defaultMode
+	}
+
 	quotaCacheMu.Lock()
 	cachedSnaps := quotaCache
 	quotaCacheMu.Unlock()
@@ -1943,8 +1990,19 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 	if cachedSnaps != nil {
 		for _, snap := range cachedSnaps {
 			if snap != nil {
-				if gq, ok := snap.Quotas["Gemini (Weekly)"]; ok && gq.RemainingPct == 0 {
-					depletedEmails[snap.Email] = true
+				gq, gok := snap.Quotas["Gemini (Weekly)"]
+				cq, cok := snap.Quotas["Claude & GPT (Weekly)"]
+				gemini0 := gok && gq.RemainingPct == 0
+				claude0 := cok && cq.RemainingPct == 0
+
+				if mode == "both" {
+					if gemini0 && claude0 {
+						depletedEmails[snap.Email] = true
+					}
+				} else {
+					if gemini0 {
+						depletedEmails[snap.Email] = true
+					}
 				}
 			}
 		}
@@ -1954,13 +2012,16 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 	var remaining []*Account
 	pruned := 0
 	for _, a := range store.Accounts {
-		isDepleted := depletedEmails[a.Email] ||
-			strings.Contains(a.LastErr, "Individual quota reached") ||
-			strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
-			strings.Contains(a.LastErr, "check quota")
-		if isDepleted {
+		isDep := depletedEmails[a.Email]
+		if !isDep && mode == "gemini" {
+			// Fallback check on lastError if cache didn't have it
+			isDep = strings.Contains(a.LastErr, "Individual quota reached") ||
+				strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
+				strings.Contains(a.LastErr, "check quota")
+		}
+		if isDep {
 			pruned++
-			slogf("[prune] Akun %s dihapus", a.Email)
+			slogf("[prune] Akun %s dihapus (mode: %s)", a.Email, mode)
 		} else {
 			remaining = append(remaining, a)
 		}
@@ -1973,6 +2034,7 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok":     true,
 		"pruned": pruned,
+		"mode":   mode,
 	})
 }
 
@@ -2052,6 +2114,58 @@ func probeModel(a *Account, tok string) (int, string) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	return resp.StatusCode, string(b)
+}
+
+func checkAccountDepletedByMode(acc *Account, tok string, mode string) bool {
+	body := fmt.Sprintf(`{"project":%q}`, acc.ProjectID)
+	req, err := http.NewRequest("POST", agQuotaHost+"/v1internal:retrieveUserQuotaSummary", strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("User-Agent", agUA)
+	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", "2.1.1")
+	client := store.clientFor(acc)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var uqs struct {
+		Groups []struct {
+			DisplayName string `json:"displayName"`
+			Buckets     []struct {
+				BucketID          string   `json:"bucketId"`
+				RemainingFraction *float64 `json:"remainingFraction"`
+			} `json:"buckets"`
+		} `json:"groups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&uqs); err != nil {
+		return false
+	}
+	var geminiFrac, claudeFrac *float64
+	for _, g := range uqs.Groups {
+		for _, b := range g.Buckets {
+			bid := strings.ToLower(b.BucketID)
+			if strings.Contains(bid, "gemini") {
+				geminiFrac = b.RemainingFraction
+			} else if strings.Contains(bid, "3p") || strings.Contains(bid, "claude") || strings.Contains(bid, "gpt") {
+				claudeFrac = b.RemainingFraction
+			}
+		}
+	}
+	gemini0 := geminiFrac != nil && *geminiFrac == 0
+	claude0 := claudeFrac != nil && *claudeFrac == 0
+
+	if mode == "both" {
+		return gemini0 && claude0
+	}
+	return gemini0
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -2309,10 +2423,22 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 			snap.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 			results[i] = snap
 
-			if store.isAutoDeleteDepleted() {
-				if gq, ok := snap.Quotas["Gemini (Weekly)"]; ok && gq.RemainingPct == 0 {
+			if autoDel, mode := store.getAutoDeleteConfig(); autoDel {
+				gq, gok := snap.Quotas["Gemini (Weekly)"]
+				cq, cok := snap.Quotas["Claude & GPT (Weekly)"]
+				gemini0 := gok && gq.RemainingPct == 0
+				claude0 := cok && cq.RemainingPct == 0
+
+				shouldPrune := false
+				if mode == "both" {
+					shouldPrune = gemini0 && claude0
+				} else {
+					shouldPrune = gemini0
+				}
+
+				if shouldPrune {
 					if store.removeAccount(acc.ID) {
-						slogf("[auto-prune] Akun %s dihapus otomatis (kuota Gemini habis 0%%)", acc.Email)
+						slogf("[auto-prune] Akun %s dihapus otomatis (mode: %s, Gemini 0%%, Claude %v)", acc.Email, mode, claude0)
 					}
 				}
 			}

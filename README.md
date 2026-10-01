@@ -37,8 +37,10 @@ Didesain khusus untuk menggantikan solusi berbasis web framework berat (seperti 
   - Worker headless berbasis Node.js + [CloakBrowser](https://cloakbrowser.dev) untuk login Google Workspace, menyetujui izin OAuth Antigravity, mengambil refreshToken & `projectId`, dan langsung mendaftarkan akun ke pool `agrouter`.
   - Dijalankan langsung dari dashboard admin via tombol `+ AKUN` atau via CLI.
 - **Dashboard Admin Monospace Gelap (`/admin`):**
-  - **Auto-Prune Akun Habis (Switch ON/OFF):** Saklar otomatis untuk langsung menghapus akun yang kuota Gemini-nya habis (0%) agar pool selalu bersih.
-  - **One-Click Prune:** Tombol instan untuk membersihkan semua akun 0% sekaligus.
+  - **Auto-Prune Akun Habis (Switch ON/OFF & Multi-Mode):**
+    - **Mode "Habis Gemini langsung hapus":** Cocok untuk penggunaan fokus Gemini Flash. Akun langsung dihapus saat kuota Gemini mencapai 0%.
+    - **Mode "Habis Gemini & Claude baru hapus":** Cocok dipadukan dengan Model Combo Fallback. Akun yang kuota Gemini-nya habis tidak langsung dihapus, melainkan tetap disimpan untuk melayani request Claude sampai kuota keduanya benar-benar 0%.
+  - **One-Click Prune:** Tombol instan untuk membersihkan semua akun habis sesuai kriteria mode yang aktif.
   - **Batch Actions:** Checkbox select-all, aktifkan massal, matikan massal, dan hapus akun terpilih.
   - **Quota Monitor:** Menampilkan persentase sisa kuota mingguan dan waktu reset per-model untuk setiap akun.
   - **Recent Requests Widget:** Tabel log request per-call real-time ala 9router lengkap dengan status dot, indikator in/out token (`162.845↑ 1.430↓`), cached token badge, dan latensi.

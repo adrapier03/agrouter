@@ -91,6 +91,7 @@ type Store struct {
 	AdminToken         string        `json:"adminToken,omitempty"`
 	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
+	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "gemini" | "both"
 	Combos             []*ComboModel `json:"combos,omitempty"`
 	rr                 int           // round-robin cursor
 }
@@ -191,6 +192,27 @@ func (s *Store) isAutoDeleteDepleted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.AutoDeleteDepleted
+}
+
+func (s *Store) getAutoDeleteConfig() (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode := s.AutoDeleteMode
+	if mode == "" {
+		mode = "gemini"
+	}
+	return s.AutoDeleteDepleted, mode
+}
+
+func (s *Store) setAutoDeleteConfig(enabled bool, mode string) {
+	s.mu.Lock()
+	s.AutoDeleteDepleted = enabled
+	if mode == "" {
+		mode = "gemini"
+	}
+	s.AutoDeleteMode = mode
+	s.save()
+	s.mu.Unlock()
 }
 
 func (s *Store) setAutoDeleteDepleted(v bool) {
