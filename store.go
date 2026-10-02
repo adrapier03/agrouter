@@ -330,15 +330,16 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 var defaultTransport = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
-		Timeout:   15 * time.Second,
-		KeepAlive: 30 * time.Second,
+		Timeout:   10 * time.Second,
+		KeepAlive: 15 * time.Second,
 	}).DialContext,
 	ForceAttemptHTTP2:     true,
 	MaxIdleConns:          100,
-	IdleConnTimeout:       90 * time.Second,
+	MaxIdleConnsPerHost:   20,
+	IdleConnTimeout:       30 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
-	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 45*time.Second),
+	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 25*time.Second),
 }
 
 var httpClient = &http.Client{

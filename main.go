@@ -1385,6 +1385,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			resp, err := client.Do(req)
 			if err != nil {
 				slogf("[attempt %d] %s upstream error: %v", attempt, acc.Email, err)
+				client.CloseIdleConnections()
+				defaultTransport.CloseIdleConnections()
 				store.markError(acc, err.Error())
 				lastErrBody = err.Error()
 				continue
@@ -1472,6 +1474,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						resp2, err2 := client.Do(req2)
 						if err2 != nil {
 							slogf("[retry %d] %s transport error: %v", bi+1, acc.Email, err2)
+							client.CloseIdleConnections()
+							defaultTransport.CloseIdleConnections()
 							continue
 						}
 						if resp2.StatusCode == http.StatusOK {
