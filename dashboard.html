@@ -309,10 +309,10 @@ button.test:disabled{opacity:.5; cursor:wait}
       <div class="right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="quota-autodel-btn" onclick="toggleAutoDelete()" style="font-weight:700">⚡ Auto-Hapus: OFF</button>
         <select id="quota-autodel-mode" onchange="changeAutoDeleteMode(this.value)" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:4px 8px;font:inherit;font-size:12px" title="Kriteria hapus akun otomatis">
-          <option value="gemini">Habis Gemini langsung hapus</option>
-          <option value="both">Habis Gemini & Claude baru hapus</option>
+          <option value="gemini">Habis Gemini / Expired langsung hapus</option>
+          <option value="both">Habis Gemini & Claude / Expired baru hapus</option>
         </select>
-        <button onclick="pruneDepletedNow()" class="danger">🗑 Hapus Akun Habis</button>
+        <button onclick="pruneDepletedNow()" class="danger">🗑 Hapus Akun Habis / Expired</button>
         <button onclick="loadQuota(1)">⟳ refresh</button>
       </div>
     </div>
@@ -421,12 +421,12 @@ function updateAutoDeleteUI() {
 }
 
 async function pruneDepletedNow() {
-  const modeLabel = autoDeleteMode === 'both' ? 'Gemini DAN Claude 0%' : 'Gemini 0%';
-  if (!confirm(`Yakin ingin MENGHAPUS SEMUA akun dengan kriteria (${modeLabel})?`)) return;
+  const modeLabel = autoDeleteMode === 'both' ? 'Gemini DAN Claude 0% atau Expired' : 'Gemini 0% atau Expired';
+  if (!confirm(`Yakin ingin MENGHAPUS SEMUA akun yang habis (${modeLabel}) atau expired (invalid_grant)?`)) return;
   try {
     const r = await api('/admin/accounts/prune-depleted?mode=' + encodeURIComponent(autoDeleteMode), { method: 'POST' });
     const j = await r.json();
-    toast(`Berhasil menghapus ${j.pruned || 0} akun (${j.mode || autoDeleteMode}).`);
+    toast(`Berhasil menghapus ${j.pruned || 0} akun (habis/expired).`);
     load();
     loadQuota(1);
   } catch(e) {

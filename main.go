@@ -1362,6 +1362,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				slogf("[attempt %d] %s token refresh failed: %v", attempt, acc.Email, err)
 				store.markError(acc, "refresh: "+err.Error())
+				if strings.Contains(err.Error(), "invalid_grant") && store.isAutoDeleteDepleted() {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis dari pool (refresh token expired / invalid_grant)", acc.Email)
+					}
+				}
 				continue
 			}
 			agBody := buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
@@ -2019,9 +2024,14 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 				strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
 				strings.Contains(a.LastErr, "check quota")
 		}
-		if isDep {
+		isExpired := strings.Contains(a.LastErr, "invalid_grant")
+		if isDep || isExpired {
 			pruned++
-			slogf("[prune] Akun %s dihapus (mode: %s)", a.Email, mode)
+			reason := "kuota habis"
+			if isExpired {
+				reason = "refresh token expired / invalid_grant"
+			}
+			slogf("[prune] Akun %s dihapus (%s)", a.Email, reason)
 		} else {
 			remaining = append(remaining, a)
 		}
@@ -2380,12 +2390,16 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 func handleQuota(w http.ResponseWriter, r *http.Request) {
 	refresh := r.URL.Query().Get("refresh") == "1"
 	quotaCacheMu.Lock()
-	defer quotaCacheMu.Unlock()
 	if !refresh && time.Since(quotaCacheTime) < 3*time.Minute && quotaCache != nil {
+		cachedData := quotaCache
+		cachedTime := quotaCacheTime
+		quotaCacheMu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"fetchedAt": quotaCacheTime.UTC().Format(time.RFC3339), "cached": true, "accounts": quotaCache})
+			"fetchedAt": cachedTime.UTC().Format(time.RFC3339), "cached": true, "accounts": cachedData})
 		return
 	}
+	quotaCacheMu.Unlock()
+
 	store.mu.Lock()
 	var targets []*Account
 	for _, a := range store.Accounts {
@@ -2412,12 +2426,24 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				results[i].Error = "refresh: " + err.Error()
 				results[i].FetchedAt = time.Now().UTC().Format(time.RFC3339)
+				store.markError(acc, "refresh: "+err.Error())
+				if strings.Contains(err.Error(), "invalid_grant") && store.isAutoDeleteDepleted() {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis (refresh token expired / invalid_grant)", acc.Email)
+					}
+				}
 				return
 			}
 			snap, err := fetchAccountQuota(acc, tok)
 			if err != nil {
 				results[i].Error = err.Error()
 				results[i].FetchedAt = time.Now().UTC().Format(time.RFC3339)
+				store.markError(acc, err.Error())
+				if (strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "invalid_grant")) && store.isAutoDeleteDepleted() {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis (unauthorized / invalid_grant)", acc.Email)
+					}
+				}
 				return
 			}
 			snap.FetchedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2446,8 +2472,10 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
+	quotaCacheMu.Lock()
 	quotaCache = results
 	quotaCacheTime = time.Now()
+	quotaCacheMu.Unlock()
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"fetchedAt": quotaCacheTime.UTC().Format(time.RFC3339), "cached": false, "accounts": results})
 }
@@ -2746,6 +2774,12 @@ func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 		tok, err := store.ensureToken(acc)
 		if err != nil {
 			slogf("[image %d] %s token refresh failed: %v", attempt, acc.Email, err)
+			store.markError(acc, "refresh: "+err.Error())
+			if strings.Contains(err.Error(), "invalid_grant") && store.isAutoDeleteDepleted() {
+				if store.removeAccount(acc.ID) {
+					slogf("[auto-prune] Akun %s dihapus otomatis dari pool (refresh token expired / invalid_grant)", acc.Email)
+				}
+			}
 			continue
 		}
 
