@@ -123,8 +123,46 @@ func loadStore(path string) (*Store, error) {
 	return s, nil
 }
 
+type storeSnapshot struct {
+	Accounts           []*Account    `json:"accounts"`
+	AdminToken         string        `json:"adminToken,omitempty"`
+	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
+	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
+	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"`
+	Combos             []*ComboModel `json:"combos,omitempty"`
+}
+
+// save writes the store to disk. Caller MUST hold s.mu.
 func (s *Store) save() error {
-	b, err := json.MarshalIndent(s, "", "  ")
+	accs := make([]*Account, len(s.Accounts))
+	for i, a := range s.Accounts {
+		copyA := *a
+		accs[i] = &copyA
+	}
+	keys := make([]*APIKey, len(s.APIKeys))
+	for i, k := range s.APIKeys {
+		copyK := *k
+		keys[i] = &copyK
+	}
+	combos := make([]*ComboModel, len(s.Combos))
+	for i, c := range s.Combos {
+		copyC := *c
+		if c.Models != nil {
+			copyC.Models = append([]string(nil), c.Models...)
+		}
+		combos[i] = &copyC
+	}
+
+	snap := storeSnapshot{
+		Accounts:           accs,
+		AdminToken:         s.AdminToken,
+		APIKeys:            keys,
+		AutoDeleteDepleted: s.AutoDeleteDepleted,
+		AutoDeleteMode:     s.AutoDeleteMode,
+		Combos:             combos,
+	}
+
+	b, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -174,17 +212,17 @@ func (s *Store) byID(id string) *Account {
 
 func (s *Store) markUsed(a *Account) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	a.LastUsedAt = time.Now().UTC().Format(time.RFC3339)
 	a.ReqCount++
-	s.mu.Unlock()
 	s.save()
 }
 
 func (s *Store) markError(a *Account, msg string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	a.LastErr = msg
 	a.ErrCount++
-	s.mu.Unlock()
 	s.save()
 }
 

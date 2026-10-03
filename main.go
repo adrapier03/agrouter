@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -2423,6 +2424,11 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 	for i, a := range targets {
 		wg.Add(1)
 		go func(i int, acc *Account) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[handleQuota PANIC RECOVERED] account %s: %v\n%s", acc.Email, rec, debug.Stack())
+				}
+			}()
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -3016,9 +3022,21 @@ func main() {
 	mux.HandleFunc("/admin/gsuite/status", adminAuth(handleGSuiteStatus))
 	mux.HandleFunc("/admin/gsuite/stop", adminAuth(handleGSuiteStop))
 
+	recoveryMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[HTTP PANIC RECOVERED] %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+					http.Error(w, `{"error":{"message":"internal server error","type":"server_panic"}}`, http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	srv := &http.Server{
 		Addr:              listenAddr,
-		Handler:           mux,
+		Handler:           recoveryMiddleware(mux),
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 	log.Printf("agrouter listening on %s (accounts: %d)", listenAddr, len(store.Accounts))
