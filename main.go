@@ -1443,15 +1443,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 								slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", acc.Email)
 							}
 						} else {
-							// mode == "gemini"
+							// mode == "gemini" -> only delete if GEMINI is exhausted
 							if isGem {
 								if store.removeAccount(acc.ID) {
 									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
 								}
 							} else if isCld {
-								if store.removeAccount(acc.ID) {
-									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Claude habis)", acc.Email)
-								}
+								slogf("[auto-prune] Kuota Claude %s habis, akun disimpan untuk Gemini (mode: gemini)", acc.Email)
 							}
 						}
 					}
@@ -1463,8 +1461,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 				// Retry strategy:
 				// Capacity overload (503 or 400 MODEL_CAPACITY_EXHAUSTED):
-				// Give Google's edge node time to cool down (3s -> 6s).
-				if isCapacityOverload {
+				// If not in a combo, give edge node time to cool down (3s -> 6s).
+				// If IN a combo with fallback, skip sleep to avoid client-side HTTP timeouts!
+				if isCapacityOverload && comboName == "" {
 					backoffs := []time.Duration{3 * time.Second, 6 * time.Second}
 					for bi, d := range backoffs {
 						time.Sleep(d)
