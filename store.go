@@ -91,7 +91,7 @@ type Store struct {
 	AdminToken         string        `json:"adminToken,omitempty"`
 	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
-	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "gemini" | "both"
+	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "both" | "gemini" | "claude"
 	Combos             []*ComboModel `json:"combos,omitempty"`
 	rr                 int           // round-robin cursor
 }

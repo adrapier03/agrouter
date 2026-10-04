@@ -1440,7 +1440,22 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 									slogf("[auto-prune] Kuota Claude %s habis, tapi Gemini masih ada", acc.Email)
 								}
 							} else if isGem {
-								slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", acc.Email)
+								if checkAccountDepletedByMode(acc, tok, "both") {
+									if store.removeAccount(acc.ID) {
+										slogf("[auto-prune] Akun %s dihapus otomatis (mode: both, Gemini & Claude habis)", acc.Email)
+									}
+								} else {
+									slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", acc.Email)
+								}
+							}
+						} else if mode == "claude" {
+							// mode == "claude" -> only delete if CLAUDE is exhausted
+							if isCld {
+								if store.removeAccount(acc.ID) {
+									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Claude habis)", acc.Email)
+								}
+							} else if isGem {
+								slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: claude)", acc.Email)
 							}
 						} else {
 							// mode == "gemini" -> only delete if GEMINI is exhausted
@@ -2008,7 +2023,12 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 					if gemini0 && claude0 {
 						depletedEmails[snap.Email] = true
 					}
+				} else if mode == "claude" {
+					if claude0 {
+						depletedEmails[snap.Email] = true
+					}
 				} else {
+					// mode == "gemini"
 					if gemini0 {
 						depletedEmails[snap.Email] = true
 					}
@@ -2022,11 +2042,16 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 	pruned := 0
 	for _, a := range store.Accounts {
 		isDep := depletedEmails[a.Email]
-		if !isDep && mode == "gemini" {
-			// Fallback check on lastError if cache didn't have it
-			isDep = strings.Contains(a.LastErr, "Individual quota reached") ||
+		if !isDep {
+			if mode == "gemini" && (strings.Contains(a.LastErr, "Individual quota reached") ||
 				strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
-				strings.Contains(a.LastErr, "check quota")
+				strings.Contains(a.LastErr, "check quota")) {
+				isDep = true
+			} else if mode == "claude" && strings.Contains(a.LastErr, "claude") && (strings.Contains(a.LastErr, "Individual quota reached") ||
+				strings.Contains(a.LastErr, "QUOTA_EXHAUSTED") ||
+				strings.Contains(a.LastErr, "check quota")) {
+				isDep = true
+			}
 		}
 		isExpired := strings.Contains(a.LastErr, "invalid_grant")
 		if isDep || isExpired {
@@ -2178,6 +2203,8 @@ func checkAccountDepletedByMode(acc *Account, tok string, mode string) bool {
 
 	if mode == "both" {
 		return gemini0 && claude0
+	} else if mode == "claude" {
+		return claude0
 	}
 	return gemini0
 }

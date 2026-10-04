@@ -309,8 +309,9 @@ button.test:disabled{opacity:.5; cursor:wait}
       <div class="right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="quota-autodel-btn" onclick="toggleAutoDelete()" style="font-weight:700">⚡ Auto-Hapus: OFF</button>
         <select id="quota-autodel-mode" onchange="changeAutoDeleteMode(this.value)" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:4px 8px;font:inherit;font-size:12px" title="Kriteria hapus akun otomatis">
-          <option value="gemini">Habis Gemini / Expired langsung hapus</option>
-          <option value="both">Habis Gemini & Claude / Expired baru hapus</option>
+          <option value="both">Habis Gemini & Claude / Expired baru hapus (Both)</option>
+          <option value="gemini">Habis Gemini Saja / Expired langsung hapus (Gemini only)</option>
+          <option value="claude">Habis Claude Saja / Expired langsung hapus (Claude only)</option>
         </select>
         <button onclick="pruneDepletedNow()" class="danger">🗑 Hapus Akun Habis / Expired</button>
         <button onclick="loadQuota(1)">⟳ refresh</button>
@@ -379,7 +380,7 @@ async function toggleAutoDelete() {
     const j = await r.json();
     autoDeleteEnabled = j.autoDeleteDepleted;
     autoDeleteMode = j.autoDeleteMode || autoDeleteMode;
-    const modeLabel = autoDeleteMode === 'both' ? 'Gemini & Claude habis' : 'Gemini habis';
+    const modeLabel = autoDeleteMode === 'both' ? 'Gemini & Claude habis' : autoDeleteMode === 'claude' ? 'Claude habis' : 'Gemini habis';
     toast(autoDeleteEnabled ? `⚡ Auto-Hapus aktif (ON) — kriteria: ${modeLabel}` : '⚡ Auto-Hapus dimatikan (OFF)');
     updateAutoDeleteUI();
     load();
@@ -397,7 +398,7 @@ async function changeAutoDeleteMode(newMode) {
     });
     const j = await r.json();
     autoDeleteMode = j.autoDeleteMode || newMode;
-    const modeLabel = autoDeleteMode === 'both' ? 'Gemini & Claude habis' : 'Gemini habis';
+    const modeLabel = autoDeleteMode === 'both' ? 'Gemini & Claude habis' : autoDeleteMode === 'claude' ? 'Claude habis' : 'Gemini habis';
     toast(`Kriteria auto-hapus diubah: ${modeLabel}`);
     updateAutoDeleteUI();
     load();
@@ -421,7 +422,7 @@ function updateAutoDeleteUI() {
 }
 
 async function pruneDepletedNow() {
-  const modeLabel = autoDeleteMode === 'both' ? 'Gemini DAN Claude 0% atau Expired' : 'Gemini 0% atau Expired';
+  const modeLabel = autoDeleteMode === 'both' ? 'Gemini DAN Claude 0% atau Expired' : autoDeleteMode === 'claude' ? 'Claude 0% atau Expired' : 'Gemini 0% atau Expired';
   if (!confirm(`Yakin ingin MENGHAPUS SEMUA akun yang habis (${modeLabel}) atau expired (invalid_grant)?`)) return;
   try {
     const r = await api('/admin/accounts/prune-depleted?mode=' + encodeURIComponent(autoDeleteMode), { method: 'POST' });
@@ -450,7 +451,7 @@ async function load(){
     const autoDelColor = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';
     const autoDelBg = autoDeleteEnabled ? '#1d2b13' : 'var(--panel)';
     const autoDelBorder = autoDeleteEnabled ? '#3a5518' : 'var(--line)';
-    const modeTag = autoDeleteMode === 'both' ? 'gemini+claude' : 'gemini';
+    const modeTag = autoDeleteMode === 'both' ? 'both (gemini+claude)' : autoDeleteMode === 'claude' ? 'claude-only' : 'gemini-only';
     $('stats').innerHTML = `
       <div class="stat ok"><div class="v">${active}/${total}</div><div class="k">aktif</div></div>
       <div class="stat"><div class="v">${reqs}</div><div class="k">requests</div></div>
