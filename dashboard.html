@@ -368,7 +368,7 @@ function toast(msg, bad=false){
 }
 
 let autoDeleteEnabled = false;
-let autoDeleteMode = 'gemini';
+let autoDeleteMode = 'both';
 
 async function toggleAutoDelete() {
   const next = !autoDeleteEnabled;
@@ -445,7 +445,7 @@ async function load(){
     const errs = data.accounts.reduce((s,a)=>s+a.errors,0);
     if (data.autoDeleteDepleted !== undefined) {
       autoDeleteEnabled = data.autoDeleteDepleted;
-      autoDeleteMode = data.autoDeleteMode || 'gemini';
+      autoDeleteMode = data.autoDeleteMode || 'both';
       updateAutoDeleteUI();
     }
     const autoDelColor = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';

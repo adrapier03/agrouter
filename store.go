@@ -108,6 +108,9 @@ func loadStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if s.AutoDeleteMode == "" {
+		s.AutoDeleteMode = "both"
+	}
 	if len(s.Combos) == 0 {
 		s.Combos = []*ComboModel{
 			{
