@@ -1349,6 +1349,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		maxAttempts := nActive
 		attempted := map[string]bool{}
 		seen400Count := 0
+		seenTimeoutCount := 0
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			acc := store.pickRoundRobin()
 			if acc == nil {
@@ -1390,6 +1391,20 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				defaultTransport.CloseIdleConnections()
 				store.markError(acc, err.Error())
 				lastErrBody = err.Error()
+
+				if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") {
+					seenTimeoutCount++
+					// In a combo, fallback to next model after 2 consecutive timeouts instead of stalling for minutes!
+					if comboName != "" && mIdx < len(candidateModels)-1 && seenTimeoutCount >= 2 {
+						slogf("[combo %s] model %s timed out on %d accounts, falling back to next candidate model", comboName, reqModel, seenTimeoutCount)
+						break
+					}
+					// For standalone model, cap timeout retries to 3 accounts max
+					if seenTimeoutCount >= 3 {
+						slogf("chat timeout-exhausted: model %s timed out across %d accounts", reqModel, seenTimeoutCount)
+						break
+					}
+				}
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {

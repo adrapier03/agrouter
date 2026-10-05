@@ -380,7 +380,7 @@ var defaultTransport = &http.Transport{
 	IdleConnTimeout:       30 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
-	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 25*time.Second),
+	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 90*time.Second),
 }
 
 var httpClient = &http.Client{
