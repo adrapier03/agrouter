@@ -2203,18 +2203,22 @@ func checkAccountDepletedByMode(acc *Account, tok string, mode string) bool {
 		return false
 	}
 	var geminiFrac, claudeFrac *float64
+	hasGeminiGroup := false
+	hasClaudeGroup := false
 	for _, g := range uqs.Groups {
 		for _, b := range g.Buckets {
 			bid := strings.ToLower(b.BucketID)
 			if strings.Contains(bid, "gemini") {
+				hasGeminiGroup = true
 				geminiFrac = b.RemainingFraction
 			} else if strings.Contains(bid, "3p") || strings.Contains(bid, "claude") || strings.Contains(bid, "gpt") {
+				hasClaudeGroup = true
 				claudeFrac = b.RemainingFraction
 			}
 		}
 	}
-	gemini0 := geminiFrac != nil && *geminiFrac == 0
-	claude0 := claudeFrac != nil && *claudeFrac == 0
+	gemini0 := !hasGeminiGroup || (geminiFrac != nil && *geminiFrac == 0)
+	claude0 := !hasClaudeGroup || (claudeFrac != nil && *claudeFrac == 0)
 
 	if mode == "both" {
 		return gemini0 && claude0
@@ -2376,6 +2380,51 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 	}
 	if fam != nil {
 		models, _ := fam["models"].(map[string]interface{})
+
+		// When Google Antigravity quota is 100% depleted (0%), Google omits the group
+		// from retrieveUserQuotaSummary, and in fetchAvailableModels the model's quotaInfo
+		// contains only resetTime without remainingFraction.
+		if geminiFrac == nil {
+			for mid, v := range models {
+				if strings.HasPrefix(mid, "gemini-") {
+					if info, ok := v.(map[string]interface{}); ok {
+						if qi, ok := info["quotaInfo"].(map[string]interface{}); ok {
+							if r, ok := qi["resetTime"].(string); ok && r != "" {
+								zero := 0.0
+								geminiFrac = &zero
+								geminiReset = r
+								snap.Quotas["Gemini (Weekly)"] = modelQuota{
+									RemainingPct: 0,
+									ResetAt:      r,
+								}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if claudeFrac == nil {
+			for mid, v := range models {
+				if strings.HasPrefix(mid, "claude-") || strings.HasPrefix(mid, "gpt-") {
+					if info, ok := v.(map[string]interface{}); ok {
+						if qi, ok := info["quotaInfo"].(map[string]interface{}); ok {
+							if r, ok := qi["resetTime"].(string); ok && r != "" {
+								zero := 0.0
+								claudeFrac = &zero
+								claudeReset = r
+								snap.Quotas["Claude & GPT (Weekly)"] = modelQuota{
+									RemainingPct: 0,
+									ResetAt:      r,
+								}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+
 		for mid, v := range models {
 			info, ok := v.(map[string]interface{})
 			if !ok || info["isInternal"] == true {
