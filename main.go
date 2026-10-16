@@ -2171,54 +2171,14 @@ func probeModel(a *Account, tok string) (int, string) {
 }
 
 func checkAccountDepletedByMode(acc *Account, tok string, mode string) bool {
-	body := fmt.Sprintf(`{"project":%q}`, acc.ProjectID)
-	req, err := http.NewRequest("POST", agQuotaHost+"/v1internal:retrieveUserQuotaSummary", strings.NewReader(body))
-	if err != nil {
+	snap, err := fetchAccountQuota(acc, tok)
+	if err != nil || snap == nil {
 		return false
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("User-Agent", agUA)
-	req.Header.Set("X-Client-Name", "antigravity")
-	req.Header.Set("X-Client-Version", "2.1.1")
-	client := store.clientFor(acc)
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	var uqs struct {
-		Groups []struct {
-			DisplayName string `json:"displayName"`
-			Buckets     []struct {
-				BucketID          string   `json:"bucketId"`
-				RemainingFraction *float64 `json:"remainingFraction"`
-			} `json:"buckets"`
-		} `json:"groups"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&uqs); err != nil {
-		return false
-	}
-	var geminiFrac, claudeFrac *float64
-	hasGeminiGroup := false
-	hasClaudeGroup := false
-	for _, g := range uqs.Groups {
-		for _, b := range g.Buckets {
-			bid := strings.ToLower(b.BucketID)
-			if strings.Contains(bid, "gemini") {
-				hasGeminiGroup = true
-				geminiFrac = b.RemainingFraction
-			} else if strings.Contains(bid, "3p") || strings.Contains(bid, "claude") || strings.Contains(bid, "gpt") {
-				hasClaudeGroup = true
-				claudeFrac = b.RemainingFraction
-			}
-		}
-	}
-	gemini0 := !hasGeminiGroup || (geminiFrac != nil && *geminiFrac == 0)
-	claude0 := !hasClaudeGroup || (claudeFrac != nil && *claudeFrac == 0)
+	gq, gok := snap.Quotas["Gemini (Weekly)"]
+	cq, cok := snap.Quotas["Claude & GPT (Weekly)"]
+	gemini0 := gok && gq.RemainingPct == 0
+	claude0 := cok && cq.RemainingPct == 0
 
 	if mode == "both" {
 		return gemini0 && claude0
@@ -2390,12 +2350,17 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 					if info, ok := v.(map[string]interface{}); ok {
 						if qi, ok := info["quotaInfo"].(map[string]interface{}); ok {
 							if r, ok := qi["resetTime"].(string); ok && r != "" {
-								zero := 0.0
-								geminiFrac = &zero
 								geminiReset = r
+								if rf, ok := qi["remainingFraction"].(float64); ok {
+									f := rf
+									geminiFrac = &f
+								} else {
+									zero := 0.0
+									geminiFrac = &zero
+								}
 								snap.Quotas["Gemini (Weekly)"] = modelQuota{
-									RemainingPct: 0,
-									ResetAt:      r,
+									RemainingPct: (*geminiFrac) * 100,
+									ResetAt:      geminiReset,
 								}
 								break
 							}
@@ -2410,12 +2375,17 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 					if info, ok := v.(map[string]interface{}); ok {
 						if qi, ok := info["quotaInfo"].(map[string]interface{}); ok {
 							if r, ok := qi["resetTime"].(string); ok && r != "" {
-								zero := 0.0
-								claudeFrac = &zero
 								claudeReset = r
+								if rf, ok := qi["remainingFraction"].(float64); ok {
+									f := rf
+									claudeFrac = &f
+								} else {
+									zero := 0.0
+									claudeFrac = &zero
+								}
 								snap.Quotas["Claude & GPT (Weekly)"] = modelQuota{
-									RemainingPct: 0,
-									ResetAt:      r,
+									RemainingPct: (*claudeFrac) * 100,
+									ResetAt:      claudeReset,
 								}
 								break
 							}
@@ -2445,24 +2415,21 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 			var finalPct float64 = -1
 			finalReset := reset
 
-			if isGemini && geminiFrac != nil {
+			if modelFrac != nil {
+				finalPct = *modelFrac * 100
+			} else if reset != "" {
+				finalPct = 0
+			} else if isGemini && geminiFrac != nil {
 				finalPct = *geminiFrac * 100
-				if geminiReset != "" {
-					finalReset = geminiReset
-				}
-				if modelFrac != nil && (*modelFrac*100) < finalPct {
-					finalPct = *modelFrac * 100
-				}
 			} else if is3P && claudeFrac != nil {
 				finalPct = *claudeFrac * 100
-				if claudeReset != "" {
-					finalReset = claudeReset
-				}
-				if modelFrac != nil && (*modelFrac*100) < finalPct {
-					finalPct = *modelFrac * 100
-				}
-			} else if modelFrac != nil {
-				finalPct = *modelFrac * 100
+			}
+
+			if isGemini && geminiReset != "" && finalReset == "" {
+				finalReset = geminiReset
+			}
+			if is3P && claudeReset != "" && finalReset == "" {
+				finalReset = claudeReset
 			}
 
 			if finalPct >= 0 {
