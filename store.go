@@ -362,7 +362,8 @@ const (
 var (
 	agClientID     = getEnv("AG_CLIENT_ID", "1071006060591-tmhssin2h21lcre235vtolojh4g403ep"+"."+"apps.googleusercontent.com")
 	agClientSecret = getEnv("AG_CLIENT_SECRET", "GOCSPX-"+"K58FWR486LdLJ1mLB8sXC4z6qDAf")
-	agUpstreamTimeout = getEnvDuration("AGROUTER_UPSTREAM_TIMEOUT", 120*time.Second)
+	agUpstreamTimeout     = getEnvDuration("AGROUTER_UPSTREAM_TIMEOUT", 300*time.Second)
+	agHeaderTimeout       = getEnvDuration("AGROUTER_HEADER_TIMEOUT", 300*time.Second)
 )
 
 func getEnvDuration(key string, def time.Duration) time.Duration {
@@ -392,7 +393,7 @@ var defaultTransport = &http.Transport{
 	IdleConnTimeout:       30 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
-	ResponseHeaderTimeout: getEnvDuration("AGROUTER_HEADER_TIMEOUT", 90*time.Second),
+	ResponseHeaderTimeout: agHeaderTimeout,
 }
 
 var httpClient = &http.Client{
