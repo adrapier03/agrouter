@@ -1439,6 +1439,16 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					strings.Contains(lastErrBody, "exceeded your current quota") ||
 					strings.Contains(lastErrBody, "Resets in"))
 
+				isTosViolation := resp.StatusCode == 403 && (strings.Contains(lastErrBody, "TOS_VIOLATION") ||
+					strings.Contains(lastErrBody, "violation of Terms of") ||
+					strings.Contains(lastErrBody, "disabled in this account"))
+
+				if isTosViolation && store.isAutoDeleteDepleted() {
+					if store.removeAccount(acc.ID) {
+						slogf("[auto-prune] Akun %s dihapus otomatis (kena suspend Google: TOS_VIOLATION 403)", acc.Email)
+					}
+				}
+
 				if isQuotaExhausted {
 					autoDel, mode := store.getAutoDeleteConfig()
 					if autoDel {
@@ -2069,11 +2079,16 @@ func handlePruneDepleted(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		isExpired := strings.Contains(a.LastErr, "invalid_grant")
-		if isDep || isExpired {
+		isTosViolation := strings.Contains(a.LastErr, "TOS_VIOLATION") ||
+			strings.Contains(a.LastErr, "violation of Terms of") ||
+			strings.Contains(a.LastErr, "disabled in this account")
+		if isDep || isExpired || isTosViolation {
 			pruned++
 			reason := "kuota habis"
 			if isExpired {
 				reason = "refresh token expired / invalid_grant"
+			} else if isTosViolation {
+				reason = "banned Google TOS_VIOLATION (403)"
 			}
 			slogf("[prune] Akun %s dihapus (%s)", a.Email, reason)
 		} else {

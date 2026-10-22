@@ -170,7 +170,19 @@ func (s *Store) save() error {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil { // fsync prevents null-byte corruption on power cut
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path)
@@ -420,6 +432,7 @@ func (s *Store) ensureToken(a *Account) (string, error) {
 	if err == nil {
 		a.AccessTok = tok
 		a.ExpiresAt = exp
+		a.LastErr = ""
 		s.save()
 	}
 	s.mu.Unlock()
