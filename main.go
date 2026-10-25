@@ -2712,7 +2712,12 @@ func runGSuiteWorker(queueFile string) {
 	scriptDir := getGSuiteDir()
 	cmd := exec.Command(nodeBin, "ag_gsuite.js", "--file", "accounts_onboard.txt")
 	cmd.Dir = scriptDir
-	cmd.Env = append(os.Environ(), "AGROUTER_ADMIN_TOKEN="+adminTok)
+	// Pastikan TMPDIR & NODE_PATH diwariskan ke proses node agar Chromium tidak crash saat create profile
+	cmd.Env = append(os.Environ(),
+		"AGROUTER_ADMIN_TOKEN="+adminTok,
+		"TMPDIR=/tmp",
+		"NODE_PATH=/root/kiro_gsuite/node_modules",
+	)
 
 	gsuiteJob.mu.Lock()
 	gsuiteJob.cmd = cmd
