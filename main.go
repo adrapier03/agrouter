@@ -55,6 +55,11 @@ func getGSuiteDir() string {
 
 var store *Store
 
+var (
+	modelCooldownMu sync.Mutex
+	modelCooldowns  = make(map[string]map[string]time.Time) // comboName -> model -> cooldownUntil
+)
+
 // =====================================================================
 // OpenAI request → antigravity (Gemini-style v1internal) translation
 // =====================================================================
@@ -1340,7 +1345,34 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	var lastCode int
 	var lastErrBody string
 
+	// Model-level cooldown: if a model failed across all accounts recently,
+	// don't re-test all accounts on every incoming request.
+	modelCooldownMu.Lock()
+	if cdUntil, ok := modelCooldowns[comboName]; ok {
+		// Clean expired
+		for k, v := range cdUntil {
+			if time.Now().After(v) {
+				delete(cdUntil, k)
+			}
+		}
+	}
+	modelCooldownMu.Unlock()
+
 	for mIdx, reqModel := range candidateModels {
+		// If in a combo and this model is still in cooldown (all accounts failed < 5m ago),
+		// skip directly to the next model unless this is the last candidate!
+		if comboName != "" && mIdx < len(candidateModels)-1 {
+			modelCooldownMu.Lock()
+			if cdMap, ok := modelCooldowns[comboName]; ok {
+				if until, hasCd := cdMap[reqModel]; hasCd && time.Now().Before(until) {
+					modelCooldownMu.Unlock()
+					slogf("[combo %s] model %s masih cooldown sampai %s (kuota semua akun habis), skip ke model berikutnya",
+						comboName, reqModel, until.Format("15:04:05"))
+					continue
+				}
+			}
+			modelCooldownMu.Unlock()
+		}
 		upstreamModel, thinkingBudget := resolveUpstreamModel(reqModel)
 		if comboName != "" {
 			slogf("[combo %s] (#%d/%d) trying model: %s (upstream: %s)", comboName, mIdx+1, len(candidateModels), reqModel, upstreamModel)
@@ -1452,46 +1484,38 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				if isQuotaExhausted {
 					autoDel, mode := store.getAutoDeleteConfig()
 					if autoDel {
-						isGem := strings.HasPrefix(upstreamModel, "gemini-")
-						isCld := strings.HasPrefix(upstreamModel, "claude-") || strings.HasPrefix(upstreamModel, "gpt-")
-
-						if mode == "both" {
-							if isCld {
-								if checkAccountDepletedByMode(acc, tok, "both") {
-									if store.removeAccount(acc.ID) {
-										slogf("[auto-prune] Akun %s dihapus otomatis (mode: both, Gemini & Claude habis)", acc.Email)
+						go func(a *Account, t string, m string, isG bool, isC bool) {
+							if m == "both" {
+								if checkAccountDepletedByMode(a, t, "both") {
+									if store.removeAccount(a.ID) {
+										slogf("[auto-prune] Akun %s dihapus otomatis (mode: both, Gemini & Claude habis)", a.Email)
 									}
 								} else {
-									slogf("[auto-prune] Kuota Claude %s habis, tapi Gemini masih ada", acc.Email)
-								}
-							} else if isGem {
-								if checkAccountDepletedByMode(acc, tok, "both") {
-									if store.removeAccount(acc.ID) {
-										slogf("[auto-prune] Akun %s dihapus otomatis (mode: both, Gemini & Claude habis)", acc.Email)
+									if isC {
+										slogf("[auto-prune] Kuota Claude %s habis, tapi Gemini masih ada", a.Email)
+									} else {
+										slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", a.Email)
 									}
-								} else {
-									slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: both)", acc.Email)
+								}
+							} else if m == "claude" {
+								if isC {
+									if store.removeAccount(a.ID) {
+										slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Claude habis)", a.Email)
+									}
+								} else if isG {
+									slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: claude)", a.Email)
+								}
+							} else {
+								// mode == "gemini"
+								if isG {
+									if store.removeAccount(a.ID) {
+										slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", a.Email)
+									}
+								} else if isC {
+									slogf("[auto-prune] Kuota Claude %s habis, akun disimpan untuk Gemini (mode: gemini)", a.Email)
 								}
 							}
-						} else if mode == "claude" {
-							// mode == "claude" -> only delete if CLAUDE is exhausted
-							if isCld {
-								if store.removeAccount(acc.ID) {
-									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Claude habis)", acc.Email)
-								}
-							} else if isGem {
-								slogf("[auto-prune] Kuota Gemini %s habis, akun disimpan untuk Claude (mode: claude)", acc.Email)
-							}
-						} else {
-							// mode == "gemini" -> only delete if GEMINI is exhausted
-							if isGem {
-								if store.removeAccount(acc.ID) {
-									slogf("[auto-prune] Akun %s dihapus otomatis dari pool (kuota Gemini habis)", acc.Email)
-								}
-							} else if isCld {
-								slogf("[auto-prune] Kuota Claude %s habis, akun disimpan untuk Gemini (mode: gemini)", acc.Email)
-							}
-						}
+						}(acc, tok, mode, strings.HasPrefix(upstreamModel, "gemini-"), strings.HasPrefix(upstreamModel, "claude-") || strings.HasPrefix(upstreamModel, "gpt-"))
 					}
 				}
 
@@ -1619,6 +1643,14 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 		if comboName != "" && mIdx < len(candidateModels)-1 {
 			slogf("[combo %s] model %s failed across all accounts, falling back to next candidate model", comboName, reqModel)
+			// Pasang cooldown 5 menit agar request-request berikutnya langsung loncat ke kandidat berikutnya
+			// tanpa harus muter ngecek 60 akun yang kuotanya sudah habis!
+			modelCooldownMu.Lock()
+			if _, ok := modelCooldowns[comboName]; !ok {
+				modelCooldowns[comboName] = make(map[string]time.Time)
+			}
+			modelCooldowns[comboName][reqModel] = time.Now().Add(5 * time.Minute)
+			modelCooldownMu.Unlock()
 			continue
 		}
 	}
