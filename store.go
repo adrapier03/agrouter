@@ -45,20 +45,59 @@ type APIKey struct {
 }
 
 type ComboModel struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`     // Combo model identifier (e.g. "agrouter", "combo-fast")
-	Strategy  string   `json:"strategy"` // "fallback" | "round-robin" | "random"
-	Models    []string `json:"models"`   // ordered list of models
-	CreatedAt string   `json:"createdAt"`
-	cursor    int      `json:"-"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`               // Combo model identifier (e.g. "agrouter", "combo-fast")
+	Strategy           string   `json:"strategy"`           // "fallback" | "round-robin" | "random" | "context-threshold"
+	ThresholdTokens    int      `json:"thresholdTokens"`    // Threshold input tokens (default: 200000)
+	ThresholdOverModel string   `json:"thresholdOverModel"` // Model used when tokens >= threshold (e.g. "gemini-3.8-flash-high")
+	Models             []string `json:"models"`             // ordered list of models (used as default / under threshold)
+	CreatedAt          string   `json:"createdAt"`
+	cursor             int      `json:"-"`
 }
 
-func (c *ComboModel) resolveModelsLocked() []string {
+func (c *ComboModel) resolveModelsLocked(promptTokens int) []string {
 	n := len(c.Models)
 	if n == 0 {
 		return nil
 	}
 	switch c.Strategy {
+	case "context-threshold":
+		threshold := c.ThresholdTokens
+		if threshold <= 0 {
+			threshold = 200000 // default 200k
+		}
+		overModel := c.ThresholdOverModel
+		if overModel == "" {
+			overModel = "gemini-3.8-flash-high"
+		}
+
+		if promptTokens >= threshold {
+			// Konteks melebihi batas (>= 200k): Prioritaskan model kapasitas raksasa (Gemini Flash)
+			res := []string{overModel}
+			for _, m := range c.Models {
+				if m != overModel {
+					res = append(res, m)
+				}
+			}
+			return res
+		}
+
+		// Konteks di bawah batas (< 200k): Gunakan urutan default (Claude Opus Thinking)
+		res := make([]string, n)
+		copy(res, c.Models)
+		// Pastikan overModel tetap ada di akhir sebagai fallback kalau Claude habis
+		hasOver := false
+		for _, m := range res {
+			if m == overModel {
+				hasOver = true
+				break
+			}
+		}
+		if !hasOver {
+			res = append(res, overModel)
+		}
+		return res
+
 	case "round-robin":
 		start := c.cursor % n
 		c.cursor = (c.cursor + 1) % n
@@ -288,14 +327,14 @@ func (s *Store) removeAccount(id string) bool {
 	return false
 }
 
-func (s *Store) resolveCandidateModels(modelName string) ([]string, string) {
+func (s *Store) resolveCandidateModels(modelName string, promptTokens int) ([]string, string) {
 	m := strings.TrimPrefix(modelName, "ag/")
 	m = strings.TrimPrefix(m, "agr/")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.Combos {
 		if c.Name == m || c.Name == modelName {
-			return c.resolveModelsLocked(), c.Name
+			return c.resolveModelsLocked(promptTokens), c.Name
 		}
 	}
 	return []string{m}, ""

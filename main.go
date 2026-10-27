@@ -1322,7 +1322,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	approxPrompt := estimatePromptTokens(&o)
-	candidateModels, comboName := store.resolveCandidateModels(o.Model)
+	candidateModels, comboName := store.resolveCandidateModels(o.Model, approxPrompt)
 	if len(candidateModels) == 0 {
 		candidateModels = []string{o.Model}
 	}
@@ -2148,10 +2148,12 @@ func handleCombos(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPost:
 		var in struct {
-			ID       string   `json:"id"`
-			Name     string   `json:"name"`
-			Strategy string   `json:"strategy"`
-			Models   []string `json:"models"`
+			ID                 string   `json:"id"`
+			Name               string   `json:"name"`
+			Strategy           string   `json:"strategy"`
+			ThresholdTokens    int      `json:"thresholdTokens"`
+			ThresholdOverModel string   `json:"thresholdOverModel"`
+			Models             []string `json:"models"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
@@ -2170,10 +2172,12 @@ func handleCombos(w http.ResponseWriter, r *http.Request) {
 			in.Strategy = "fallback"
 		}
 		c := &ComboModel{
-			ID:       in.ID,
-			Name:     in.Name,
-			Strategy: in.Strategy,
-			Models:   in.Models,
+			ID:                 in.ID,
+			Name:               in.Name,
+			Strategy:           in.Strategy,
+			ThresholdTokens:    in.ThresholdTokens,
+			ThresholdOverModel: in.ThresholdOverModel,
+			Models:             in.Models,
 		}
 		if err := store.upsertCombo(c); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)

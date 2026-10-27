@@ -246,11 +246,31 @@ button.test:disabled{opacity:.5; cursor:wait}
         </div>
         <div style="width:260px">
           <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Strategi Routing:</label>
-          <select id="combo-strategy" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+          <select id="combo-strategy" onchange="toggleThresholdFields()" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
             <option value="fallback">Fallback (Try in order) — Rekomendasi</option>
+            <option value="context-threshold">Context Threshold (Switch saat &gt; 200k tokens)</option>
             <option value="round-robin">Round Robin (Rotate)</option>
             <option value="random">Random (Acak)</option>
           </select>
+        </div>
+      </div>
+
+      <div id="combo-threshold-box" style="display:none;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;margin-bottom:14px">
+        <div style="display:flex;gap:12px">
+          <div style="flex:1">
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Batas Threshold Token Input:</label>
+            <input type="number" id="combo-threshold-tokens" value="200000" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+            <span style="font-size:10px;color:var(--dim)">Di bawah batas ini: pakai model prioritas utama (mis. Claude Opus).</span>
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Model Pengganti saat Konteks &gt; Threshold:</label>
+            <select id="combo-threshold-over-model" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+              <option value="gemini-3.8-flash-high">gemini-3.8-flash-high (Rekomendasi Kapasitas Raksasa)</option>
+              <option value="gemini-3.8-flash-tiered">gemini-3.8-flash-tiered</option>
+              <option value="claude-opus-4-6-thinking">claude-opus-4-6-thinking</option>
+            </select>
+            <span style="font-size:10px;color:var(--dim)">Saat prompt mencapai/melebihi batas token di atas.</span>
+          </div>
         </div>
       </div>
 
@@ -686,6 +706,8 @@ async function loadCombos() {
     $('combo-rows').innerHTML = combos.map(c => {
       const stratBadge = c.strategy === 'fallback' 
         ? '<span class="badge b-on" style="background:#1d2b13;color:var(--lime)">FALLBACK</span>'
+        : c.strategy === 'context-threshold'
+        ? `<span class="badge" style="background:#2d1b4e;color:#d8b4fe;border:1px solid #7e22ce">&gt;${Math.round((c.thresholdTokens||200000)/1000)}K CONTEXT</span>`
         : c.strategy === 'round-robin'
         ? '<span class="badge" style="background:#162438;color:var(--blue);border:1px solid #204060">ROUND ROBIN</span>'
         : '<span class="badge" style="background:#2b2210;color:var(--amber);border:1px solid #554420">RANDOM</span>';
@@ -714,12 +736,21 @@ async function loadCombos() {
   }
 }
 
+function toggleThresholdFields() {
+  const s = $('combo-strategy').value;
+  $('combo-threshold-box').style.display = (s === 'context-threshold') ? 'block' : 'none';
+}
+
 function openComboModal(existing = null) {
   $('combo-box').style.display = 'block';
   $('combo-id').value = existing ? existing.id : '';
   $('combo-name').value = existing ? existing.name : '';
   $('combo-strategy').value = existing ? existing.strategy : 'fallback';
+  $('combo-threshold-tokens').value = existing && existing.thresholdTokens ? existing.thresholdTokens : 200000;
+  $('combo-threshold-over-model').value = existing && existing.thresholdOverModel ? existing.thresholdOverModel : 'gemini-3.8-flash-high';
   $('combo-box-title').textContent = existing ? `Edit Model Combo: ${existing.name}` : 'Buat Model Combo Baru';
+
+  toggleThresholdFields();
 
   selectedComboModels = existing && existing.models ? [...existing.models] : [];
 
@@ -797,6 +828,8 @@ async function saveCombo() {
   const id = $('combo-id').value.trim();
   const name = $('combo-name').value.trim();
   const strategy = $('combo-strategy').value;
+  const thresholdTokens = parseInt($('combo-threshold-tokens').value, 10) || 200000;
+  const thresholdOverModel = $('combo-threshold-over-model').value;
 
   if (!name) return toast('Masukkan nama model combo!', true);
   if (selectedComboModels.length === 0) return toast('Pilih minimal 1 model target!', true);
@@ -808,6 +841,8 @@ async function saveCombo() {
         id: id || undefined,
         name,
         strategy,
+        thresholdTokens,
+        thresholdOverModel,
         models: selectedComboModels
       })
     });
