@@ -693,7 +693,9 @@ func estimatePromptTokens(o *oaiRequest) int {
 	for _, t := range o.Tools {
 		chars += len(t.Function.Name) + len(t.Function.Description) + len(t.Function.Parameters)
 	}
-	tok := chars / 4
+	// Realistic BPE token estimation for code, JSON schemas, tool calls, and Indonesian/mixed text.
+	// Benchmarked on real Hermes sessions: ~1.6 characters per token (ratio 10/16).
+	tok := (chars * 10) / 16
 	if tok < 1 {
 		tok = 1
 	}
