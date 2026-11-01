@@ -693,9 +693,9 @@ func estimatePromptTokens(o *oaiRequest) int {
 	for _, t := range o.Tools {
 		chars += len(t.Function.Name) + len(t.Function.Description) + len(t.Function.Parameters)
 	}
-	// Realistic BPE token estimation for code, JSON schemas, tool calls, and Indonesian/mixed text.
-	// Benchmarked on real Hermes sessions: ~1.6 characters per token (ratio 10/16).
-	tok := (chars * 10) / 16
+	// Realistic BPE token estimation across entire payload (system prompt + tools schema + conversation history).
+	// Benchmarked on real Hermes sessions: ~2.4 characters per token (ratio 10/24 or 5/12).
+	tok := (chars * 5) / 12
 	if tok < 1 {
 		tok = 1
 	}
@@ -1325,6 +1325,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	approxPrompt := estimatePromptTokens(&o)
 	candidateModels, comboName := store.resolveCandidateModels(o.Model, approxPrompt)
+	if comboName != "" {
+		slogf("[combo %s] approxPrompt: %d tokens (resolved: %v)", comboName, approxPrompt, candidateModels)
+	}
 	if len(candidateModels) == 0 {
 		candidateModels = []string{o.Model}
 	}
