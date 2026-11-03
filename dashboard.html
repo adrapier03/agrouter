@@ -389,6 +389,23 @@ function toast(msg, bad=false){
 
 let autoDeleteEnabled = false;
 let autoDeleteMode = 'both';
+let accountRouting = 'round-robin';
+
+async function toggleAccountRouting() {
+  const next = accountRouting === 'sticky' ? 'round-robin' : 'sticky';
+  try {
+    const r = await api('/admin/settings', {
+      method: 'POST',
+      body: JSON.stringify({ accountRouting: next })
+    });
+    const j = await r.json();
+    accountRouting = j.accountRouting || next;
+    toast(accountRouting === 'sticky' ? '📌 Mode Sticky aktif: 1 akun dipakai terus sampai kuota habis' : '🔀 Mode Round-Robin aktif: rotasi akun bergantian tiap 1 turn');
+    load();
+  } catch(e) {
+    toast('Gagal ubah rotasi: ' + e.message, true);
+  }
+}
 
 async function toggleAutoDelete() {
   const next = !autoDeleteEnabled;
@@ -468,6 +485,16 @@ async function load(){
       autoDeleteMode = data.autoDeleteMode || 'both';
       updateAutoDeleteUI();
     }
+    if (data.accountRouting) {
+      accountRouting = data.accountRouting;
+    }
+    const isSticky = accountRouting === 'sticky';
+    const routingColor = isSticky ? '#38bdf8' : 'var(--lime)';
+    const routingBg = isSticky ? '#082f49' : '#142918';
+    const routingBorder = isSticky ? '#0284c7' : '#22543d';
+    const routingShort = isSticky ? 'STICKY' : 'ROUND-ROBIN';
+    const routingDesc = isSticky ? '1 akun s/d habis' : 'tiap 1 turn';
+
     const autoDelColor = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';
     const autoDelBg = autoDeleteEnabled ? '#1d2b13' : 'var(--panel)';
     const autoDelBorder = autoDeleteEnabled ? '#3a5518' : 'var(--line)';
@@ -476,7 +503,10 @@ async function load(){
       <div class="stat ok"><div class="v">${active}/${total}</div><div class="k">aktif</div></div>
       <div class="stat"><div class="v">${reqs}</div><div class="k">requests</div></div>
       <div class="stat ${errs>0?'err':''}"><div class="v">${errs}</div><div class="k">errors</div></div>
-      <div class="stat"><div class="v">RR</div><div class="k">round-robin</div></div>
+      <div class="stat" onclick="toggleAccountRouting()" style="cursor:pointer;border-color:${routingBorder};background:${routingBg};user-select:none" title="Klik untuk mengganti strategi rotasi akun: Round-Robin (ganti tiap turn) vs Sticky (pakai 1 akun sampai habis)">
+        <div class="v" style="color:${routingColor};font-size:15px">${routingShort}</div>
+        <div class="k">rotasi (${routingDesc})</div>
+      </div>
       <div class="stat" onclick="toggleAutoDelete()" style="cursor:pointer;border-color:${autoDelBorder};background:${autoDelBg};user-select:none" title="Klik untuk mengaktifkan / menonaktifkan Auto-Hapus akun (${modeTag})">
         <div class="v" style="color:${autoDelColor}">${autoDeleteEnabled ? 'ON' : 'OFF'}</div>
         <div class="k">auto-hapus (${modeTag})</div>

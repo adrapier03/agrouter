@@ -1388,7 +1388,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		seen400Count := 0
 		seenTimeoutCount := 0
 		for attempt := 0; attempt < maxAttempts; attempt++ {
-			acc := store.pickRoundRobin()
+			acc := store.pickAccount(attempt)
 			if acc == nil {
 				break
 			}
@@ -1843,6 +1843,7 @@ func handleAccounts(w http.ResponseWriter, r *http.Request) {
 			"accounts":           out,
 			"autoDeleteDepleted": store.AutoDeleteDepleted,
 			"autoDeleteMode":     mode,
+			"accountRouting":     store.getAccountRouting(),
 		})
 	case http.MethodPost:
 		var in struct {
@@ -2028,11 +2029,13 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"autoDeleteDepleted": autoDel,
 			"autoDeleteMode":     mode,
+			"accountRouting":     store.getAccountRouting(),
 		})
 	case http.MethodPost:
 		var in struct {
 			AutoDeleteDepleted *bool   `json:"autoDeleteDepleted"`
 			AutoDeleteMode     *string `json:"autoDeleteMode"`
+			AccountRouting     *string `json:"accountRouting"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
@@ -2046,11 +2049,16 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			mode = *in.AutoDeleteMode
 		}
 		store.setAutoDeleteConfig(autoDel, mode)
+		if in.AccountRouting != nil && *in.AccountRouting != "" {
+			store.setAccountRouting(*in.AccountRouting)
+			slogf("[settings] accountRouting set to %s", *in.AccountRouting)
+		}
 		slogf("[settings] autoDelete set to enabled=%v, mode=%s", autoDel, mode)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":                 true,
 			"autoDeleteDepleted": autoDel,
 			"autoDeleteMode":     mode,
+			"accountRouting":     store.getAccountRouting(),
 		})
 	default:
 		http.Error(w, `{"error":"GET or POST only"}`, http.StatusMethodNotAllowed)
@@ -2891,7 +2899,7 @@ func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 	maxAttempts := nActive
 	attempted := map[string]bool{}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		acc := store.pickRoundRobin()
+		acc := store.pickAccount(attempt)
 		if acc == nil {
 			break
 		}

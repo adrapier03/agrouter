@@ -131,6 +131,7 @@ type Store struct {
 	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "both" | "gemini" | "claude"
+	AccountRouting     string        `json:"accountRouting,omitempty"` // "round-robin" | "sticky"
 	Combos             []*ComboModel `json:"combos,omitempty"`
 	rr                 int           // round-robin cursor
 }
@@ -149,6 +150,9 @@ func loadStore(path string) (*Store, error) {
 	}
 	if s.AutoDeleteMode == "" {
 		s.AutoDeleteMode = "both"
+	}
+	if s.AccountRouting == "" {
+		s.AccountRouting = "round-robin"
 	}
 	if len(s.Combos) == 0 {
 		s.Combos = []*ComboModel{
@@ -171,6 +175,7 @@ type storeSnapshot struct {
 	APIKeys            []*APIKey     `json:"apiKeys,omitempty"`
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"`
+	AccountRouting     string        `json:"accountRouting,omitempty"`
 	Combos             []*ComboModel `json:"combos,omitempty"`
 }
 
@@ -201,6 +206,7 @@ func (s *Store) save() error {
 		APIKeys:            keys,
 		AutoDeleteDepleted: s.AutoDeleteDepleted,
 		AutoDeleteMode:     s.AutoDeleteMode,
+		AccountRouting:     s.AccountRouting,
 		Combos:             combos,
 	}
 
@@ -235,14 +241,36 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// pickRoundRobin returns the next active account.
-func (s *Store) pickRoundRobin() *Account {
+// pickAccount returns an active account based on the configured AccountRouting strategy.
+// In "round-robin" mode: advances cursor to next active account on every call.
+// In "sticky" mode (attempt==0): reuses current account at cursor if active;
+// on retry (attempt > 0) or if current account is inactive, advances to next active account.
+func (s *Store) pickAccount(attempt int) *Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := len(s.Accounts)
 	if n == 0 {
 		return nil
 	}
+
+	strategy := s.AccountRouting
+	if strategy == "" {
+		strategy = "round-robin"
+	}
+
+	// In sticky mode on first attempt: reuse current account if active
+	if strategy == "sticky" && attempt == 0 {
+		idx := s.rr % n
+		if idx < 0 {
+			idx += n
+		}
+		a := s.Accounts[idx]
+		if a.Active {
+			return a
+		}
+	}
+
+	// Round-robin mode OR retry (attempt > 0) OR sticky current account is inactive:
 	for i := 0; i < n; i++ {
 		s.rr = (s.rr + 1) % n
 		a := s.Accounts[s.rr]
@@ -251,6 +279,11 @@ func (s *Store) pickRoundRobin() *Account {
 		}
 	}
 	return nil
+}
+
+// pickRoundRobin returns the next active account (wrapper for pickAccount).
+func (s *Store) pickRoundRobin() *Account {
+	return s.pickAccount(0)
 }
 
 func (s *Store) byID(id string) *Account {
@@ -277,6 +310,25 @@ func (s *Store) markError(a *Account, msg string) {
 	defer s.mu.Unlock()
 	a.LastErr = msg
 	a.ErrCount++
+	s.save()
+}
+
+func (s *Store) getAccountRouting() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AccountRouting == "" {
+		return "round-robin"
+	}
+	return s.AccountRouting
+}
+
+func (s *Store) setAccountRouting(strategy string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strategy != "sticky" {
+		strategy = "round-robin"
+	}
+	s.AccountRouting = strategy
 	s.save()
 }
 
