@@ -327,6 +327,7 @@ button.test:disabled{opacity:.5; cursor:wait}
         <h1><span class="ag">quota</span> <span class="mut" id="qmeta">per-model, % sisa</span></h1>
       </div>
       <div class="right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="quota-routing-btn" onclick="toggleAccountRouting()" style="font-weight:700;border:1px solid #0284c7;background:#082f49;color:#38bdf8">📌 Rotasi: STICKY (1 Akun)</button>
         <button id="quota-autodel-btn" onclick="toggleAutoDelete()" style="font-weight:700">⚡ Auto-Hapus: OFF</button>
         <select id="quota-autodel-mode" onchange="changeAutoDeleteMode(this.value)" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:4px 8px;font:inherit;font-size:12px" title="Kriteria hapus akun otomatis">
           <option value="both">Habis Gemini & Claude / Expired baru hapus (Both)</option>
@@ -391,6 +392,18 @@ let autoDeleteEnabled = false;
 let autoDeleteMode = 'both';
 let accountRouting = 'round-robin';
 
+function updateRoutingUI() {
+  const isSticky = accountRouting === 'sticky';
+  const rBtn = $('quota-routing-btn');
+  if (rBtn) {
+    rBtn.textContent = isSticky ? '📌 Rotasi: STICKY (1 Akun)' : '🔀 Rotasi: ROUND-ROBIN';
+    rBtn.style.color = isSticky ? '#38bdf8' : 'var(--lime)';
+    rBtn.style.background = isSticky ? '#082f49' : '#142918';
+    rBtn.style.borderColor = isSticky ? '#0284c7' : '#22543d';
+    rBtn.title = isSticky ? 'Pakai 1 akun sampai kuota habis baru ganti' : 'Rotasi akun bergantian tiap 1 turn';
+  }
+}
+
 async function toggleAccountRouting() {
   const next = accountRouting === 'sticky' ? 'round-robin' : 'sticky';
   try {
@@ -401,6 +414,7 @@ async function toggleAccountRouting() {
     const j = await r.json();
     accountRouting = j.accountRouting || next;
     toast(accountRouting === 'sticky' ? '📌 Mode Sticky aktif: 1 akun dipakai terus sampai kuota habis' : '🔀 Mode Round-Robin aktif: rotasi akun bergantian tiap 1 turn');
+    updateRoutingUI();
     load();
   } catch(e) {
     toast('Gagal ubah rotasi: ' + e.message, true);
@@ -487,6 +501,7 @@ async function load(){
     }
     if (data.accountRouting) {
       accountRouting = data.accountRouting;
+      updateRoutingUI();
     }
     const isSticky = accountRouting === 'sticky';
     const routingColor = isSticky ? '#38bdf8' : 'var(--lime)';
