@@ -1839,11 +1839,15 @@ func handleAccounts(w http.ResponseWriter, r *http.Request) {
 		if mode == "" {
 			mode = "gemini"
 		}
+		routing := store.AccountRouting
+		if routing == "" {
+			routing = "round-robin"
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"accounts":           out,
 			"autoDeleteDepleted": store.AutoDeleteDepleted,
 			"autoDeleteMode":     mode,
-			"accountRouting":     store.getAccountRouting(),
+			"accountRouting":     routing,
 		})
 	case http.MethodPost:
 		var in struct {
