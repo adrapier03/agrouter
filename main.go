@@ -2576,24 +2576,41 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 				}
 
 				lower := strings.ToLower(bid + " " + bName + " " + gName)
+				win, _ := bm["window"].(string)
+				is5h := win == "5h" || strings.Contains(lower, "5h") || strings.Contains(lower, "five hour")
+
 				if strings.Contains(lower, "argon") {
 					argonFrac = &frac
 					argonReset = reset
-					snap.Quotas["Gemini 4 Argon (Weekly)"] = modelQuota{
+					label := "Gemini 4 Argon (Weekly)"
+					if is5h {
+						label = "Gemini 4 Argon (5h)"
+					}
+					snap.Quotas[label] = modelQuota{
 						RemainingPct: frac * 100,
 						ResetAt:      reset,
 					}
 				} else if strings.Contains(lower, "gemini") {
-					geminiFrac = &frac
-					geminiReset = reset
-					snap.Quotas["Gemini (Weekly)"] = modelQuota{
+					label := "Gemini (Weekly)"
+					if is5h {
+						label = "Gemini (5h)"
+					} else {
+						geminiFrac = &frac
+						geminiReset = reset
+					}
+					snap.Quotas[label] = modelQuota{
 						RemainingPct: frac * 100,
 						ResetAt:      reset,
 					}
 				} else if strings.Contains(lower, "claude") || strings.Contains(lower, "3p") || strings.Contains(lower, "gpt") {
-					claudeFrac = &frac
-					claudeReset = reset
-					snap.Quotas["Claude & GPT (Weekly)"] = modelQuota{
+					label := "Claude & GPT (Weekly)"
+					if is5h {
+						label = "Claude & GPT (5h)"
+					} else {
+						claudeFrac = &frac
+						claudeReset = reset
+					}
+					snap.Quotas[label] = modelQuota{
 						RemainingPct: frac * 100,
 						ResetAt:      reset,
 					}

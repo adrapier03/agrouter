@@ -50,10 +50,11 @@ button.test:disabled{opacity:.5; cursor:wait}
 .qcard{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:12px}
 .qhead{display:flex; gap:10px; align-items:baseline; margin-bottom:10px; font-size:13px}
 .qrow{display:flex; align-items:center; gap:10px; padding:2.5px 0}
-.qmodel{width:250px; font-size:12px; color:var(--tx); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.qmodel{width:220px; font-size:12px; color:var(--tx); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .qbar{flex:1; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden}
 .qfill{height:100%; border-radius:4px}
-.qpct{width:64px; text-align:right; font-size:12px; font-weight:700}
+.qpct{width:56px; text-align:right; font-size:12px; font-weight:700}
+.qreset{width:115px; text-align:right; font-size:11px; font-family:monospace; color:var(--tx); white-space:nowrap}
 /* navigation & timeframe switcher */
 .nav-bar{display:flex; gap:6px; margin-bottom:20px; border-bottom:1px solid var(--line); padding-bottom:10px; flex-wrap:wrap}
 .nav-btn{background:transparent; color:var(--dim); border:1px solid transparent; border-radius:6px; padding:6px 14px; font-weight:700; font-size:12px; cursor:pointer}
@@ -1397,6 +1398,21 @@ async function clearLogs() {
 let quotaLoaded = false;
 function barColor(p){ return p > 50 ? 'var(--lime)' : p > 15 ? 'var(--amber)' : 'var(--red)'; }
 
+function formatResetCountdown(isoDate) {
+  if (!isoDate) return '';
+  const diffMs = new Date(isoDate).getTime() - Date.now();
+  if (diffMs <= 0) return 'ready';
+  const totalMins = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMins / 1440);
+  const hours = Math.floor((totalMins % 1440) / 60);
+  const mins = totalMins % 60;
+
+  if (days > 0) {
+    return `in ${days}d ${hours}h ${mins}m`;
+  }
+  return `in ${hours}h ${mins}m`;
+}
+
 async function loadQuota(force=0){
   $('qmeta').textContent = force ? 'fetching…' : $('qmeta').textContent;
   try {
@@ -1409,20 +1425,23 @@ async function loadQuota(force=0){
         return `<div class="qcard"><div class="qhead">${esc(acc.email)} <span class="badge b-off">ERR</span></div><div class="b-err">${esc(acc.error)}</div></div>`;
       const entries = Object.entries(acc.quotas||{})
         .filter(([m,q]) => q.remainingPct >= 0);
-      const weeklyEntries = entries.filter(([m]) => m.includes('(Weekly)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
-      const modelEntries = entries.filter(([m]) => !m.includes('(Weekly)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
+      const weeklyEntries = entries.filter(([m]) => m.includes('(Weekly)') || m.includes('(5h)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
+      const modelEntries = entries.filter(([m]) => !m.includes('(Weekly)') && !m.includes('(5h)')).sort((a,b)=>a[1].remainingPct-b[1].remainingPct);
       const noBucket = Object.entries(acc.quotas||{}).filter(([m,q]) => q.remainingPct < 0).map(([m])=>m);
 
       const renderRow = (m, q, isWeekly) => {
         const p = q.remainingPct;
-        const reset = q.resetAt ? new Date(q.resetAt).toLocaleString('id-ID') : '';
+        const resetDate = q.resetAt ? new Date(q.resetAt).toLocaleString('id-ID') : '';
+        const countdown = formatResetCountdown(q.resetAt);
         const bg = isWeekly ? 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:6px 10px;border-radius:6px;margin-bottom:6px;' : '';
         const icon = isWeekly ? '⚡ ' : '';
         const fw = isWeekly ? 'font-weight:700;' : '';
-        return `<div class="qrow" style="${bg}" title="reset ${reset}">
+        return `<div class="qrow" style="${bg}" title="Reset pada: ${resetDate}">
           <div class="qmodel" style="${fw}"><span style="color:var(--lime)">${icon}</span>${esc(m)}</div>
           <div class="qbar" style="${isWeekly?'height:10px':''}"><div class="qfill" style="width:${p.toFixed(1)}%;background:${barColor(p)}"></div></div>
-          <div class="qpct" style="color:${barColor(p)};${fw}">${p.toFixed(1)}%</div></div>`;
+          <div class="qpct" style="color:${barColor(p)};${fw}">${p.toFixed(1)}%</div>
+          <div class="qreset" style="${fw}">${esc(countdown)}</div>
+        </div>`;
       };
 
       const weeklyHtml = weeklyEntries.map(([m,q]) => renderRow(m, q, true)).join('');
