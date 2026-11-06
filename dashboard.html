@@ -93,6 +93,7 @@ button.test:disabled{opacity:.5; cursor:wait}
     <button class="nav-btn" id="nav-btn-usage" onclick="setNav('usage')">📊 USAGE</button>
     <button class="nav-btn" id="nav-btn-accounts" onclick="setNav('accounts')">👥 AKUN</button>
     <button class="nav-btn" id="nav-btn-combos" onclick="setNav('combos')">🔀 COMBOS</button>
+    <button class="nav-btn" id="nav-btn-proxies" onclick="setNav('proxies')">🌐 PROXY POOL</button>
     <button class="nav-btn" id="nav-btn-keys" onclick="setNav('keys')">🔑 API KEYS</button>
     <button class="nav-btn" id="nav-btn-quota" onclick="setNav('quota')">⚡ QUOTA</button>
     <button class="nav-btn" id="nav-btn-console" onclick="setNav('console')">💻 CONSOLE</button>
@@ -201,7 +202,16 @@ button.test:disabled{opacity:.5; cursor:wait}
       <div id="add-tab-manual" style="display:none">
         <div class="row"><input id="a-email" placeholder="email"></div>
         <textarea id="a-rt" placeholder="refreshToken (paste)"></textarea>
-        <div class="row"><input id="a-proj" placeholder="projectId (mis. circular-collector-ndxwz)"><input id="a-proxy" placeholder="proxyUrl (opsional)"></div>
+        <div class="row">
+          <input id="a-proj" placeholder="projectId (mis. circular-collector-ndxwz)" style="flex:1">
+          <select id="a-proxy-select" onchange="onAddProxySelect(this.value)" style="flex:1;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+            <option value="">-- Direct (Tanpa Proxy) --</option>
+            <option value="__custom__">+ Input Custom Proxy URL</option>
+          </select>
+        </div>
+        <div class="row" id="a-proxy-custom-row" style="display:none">
+          <input id="a-proxy" placeholder="proxyUrl (http://user:pass@host:port)" style="width:100%">
+        </div>
         <div class="row"><button onclick="addAccount()">import</button><span class="mut">atau</span><input id="a-file" type="file"><button onclick="importFile()">dari file JSON</button></div>
       </div>
     </div>
@@ -211,12 +221,16 @@ button.test:disabled{opacity:.5; cursor:wait}
       <span id="batch-count" style="font-size:12px;font-weight:700;color:var(--lime)">0 akun dipilih</span>
       <button onclick="batchAction('enable')" style="background:#1d2b13;color:var(--lime);border:1px solid #3a5518">Aktifkan (ON)</button>
       <button onclick="batchAction('disable')" style="background:#2b1616;color:var(--amber);border:1px solid #553318">Matikan (OFF)</button>
+      <div style="display:flex;align-items:center;gap:6px">
+        <select id="batch-proxy-select" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:4px 8px;font:inherit;font-size:12px"></select>
+        <button onclick="batchAssignProxy()" style="background:var(--panel2);font-weight:700">Pasang Proxy</button>
+      </div>
       <button onclick="batchAction('delete')" class="danger" style="margin-left:auto">🗑 Hapus Terpilih</button>
     </div>
     <table>
       <thead><tr>
         <th style="width:36px;text-align:center"><input type="checkbox" id="check-all" onchange="toggleSelectAll(this)" title="Pilih Semua"></th>
-        <th>akun</th><th>status</th><th>req / err</th><th>token exp</th><th>aksi</th>
+        <th>akun</th><th>status</th><th>proxy</th><th>req / err</th><th>token exp</th><th>aksi</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -306,6 +320,57 @@ button.test:disabled{opacity:.5; cursor:wait}
     </table>
   </div>
 
+  <!-- SECTION: PROXY POOLS -->
+  <div id="section-proxies" class="sec-block">
+    <div class="toolbar" style="margin-top:22px">
+      <div>
+        <h1><span class="ag">proxy pools</span> <span class="mut" id="proxies-meta">isolasi ip per akun</span></h1>
+        <div class="sub">kelola daftar proxy (HTTP/SOCKS5) untuk dipasangkan ke masing-masing akun Google Antigravity</div>
+      </div>
+      <div class="right">
+        <button onclick="openProxyModal()">+ PROXY</button>
+        <button onclick="loadProxies()">⟳ refresh</button>
+      </div>
+    </div>
+
+    <!-- Modal Form Tambah/Edit Proxy -->
+    <div id="proxy-box" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px">
+      <div style="font-weight:700;margin-bottom:12px;color:var(--tx)" id="proxy-box-title">Tambah Proxy Pool Baru</div>
+      <input type="hidden" id="proxy-id">
+      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="width:200px">
+          <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Nama Label:</label>
+          <input id="proxy-name" placeholder="mis. upc1, sg-res, dsb." style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+        </div>
+        <div style="flex:1;min-width:280px">
+          <label style="font-size:11px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:4px">Proxy URL (HTTP / SOCKS5):</label>
+          <input id="proxy-url" placeholder="http://username:password@ip:port" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button onclick="saveProxy()" style="background:var(--lime);color:#111;font-weight:700">SIMPAN PROXY</button>
+        <button onclick="testProxyInModal(this)" style="background:var(--blue);color:#fff">TES KONEKSI</button>
+        <button onclick="closeProxyModal()" style="background:var(--panel2)">BATAL</button>
+        <span id="proxy-test-status" style="margin-left:auto;font-size:12px"></span>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>nama</th>
+          <th>proxy url</th>
+          <th>status / ping</th>
+          <th>akun terkait</th>
+          <th>aksi</th>
+        </tr>
+      </thead>
+      <tbody id="proxy-rows">
+        <tr><td colspan="5" class="mut" style="text-align:center">Memuat proxy pools...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <!-- SECTION: API KEYS -->
   <div id="section-keys" class="sec-block">
     <div class="toolbar" style="margin-top:22px">
@@ -378,7 +443,7 @@ async function login(){
     if (r.status === 401) { $('lerr').textContent = 'token salah'; return; }
     sessionStorage.setItem('agtok', TOK);
     $('login').style.display='none'; $('app').style.display='block';
-    load(); loadCombos(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load, 15000); setInterval(loadCombos, 30000); setInterval(loadUsage, 15000); setInterval(loadQuota, 60000);
+    load(); loadCombos(); loadProxies(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load, 15000); setInterval(loadCombos, 30000); setInterval(loadProxies, 30000); setInterval(loadUsage, 15000); setInterval(loadQuota, 60000);
   } catch(e){ $('lerr').textContent = 'gagal: '+e.message; }
 }
 
@@ -505,6 +570,12 @@ async function load(){
       accountRouting = data.accountRouting;
       updateRoutingUI();
     }
+    if (data.proxyPools) {
+      availableProxies = data.proxyPools;
+      updateProxySelects();
+    }
+    lastAccountsData = data.accounts || [];
+
     const isSticky = accountRouting === 'sticky';
     const routingColor = isSticky ? '#38bdf8' : 'var(--lime)';
     const routingBg = isSticky ? '#082f49' : '#142918';
@@ -532,9 +603,10 @@ async function load(){
       <tr>
         <td style="text-align:center;vertical-align:middle"><input type="checkbox" class="acc-check" value="${a.id}" onchange="updateSelectedCount()"></td>
         <td><span class="email">${esc(a.email)||'<span class=mut>(tanpa email)</span>'}</span>
-            <div class="proj">${esc(a.projectId)} ${a.proxyUrl?'· proxy':''}</div></td>
+            <div class="proj">${esc(a.projectId)}</div></td>
         <td><span class="badge ${a.active?'b-on':'b-off'}">${a.active?'ACTIVE':'OFF'}</span>
             ${a.lastError?`<span class="b-err" title="${esc(a.lastError)}">${esc(a.lastError.slice(0,90))}</span>`:''}</td>
+        <td>${renderAccountProxySelect(a)}</td>
         <td>${a.requests} / <span style="color:${a.errors?'var(--red)':'var(--dim)'}">${a.errors}</span></td>
         <td class="mut">${a.tokenExpiresAt ? new Date(a.tokenExpiresAt).toLocaleTimeString() : '—'}</td>
         <td>
@@ -906,6 +978,299 @@ async function saveCombo() {
   }
 }
 
+// ---------- proxy pools ----------
+let availableProxies = [];
+let lastAccountsData = [];
+
+function cleanHost(u) {
+  if (!u) return '';
+  try {
+    const parsed = new URL(u);
+    return parsed.host;
+  } catch(e) {
+    return (u || '').split('@').pop().split('/')[0] || u;
+  }
+}
+
+function renderAccountProxySelect(acc) {
+  let matched = false;
+  let options = `<option value="">(Direct / Tanpa Proxy)</option>`;
+  (availableProxies || []).forEach(p => {
+    const isSel = acc.proxyUrl === p.url;
+    if (isSel) matched = true;
+    options += `<option value="${esc(p.url)}" ${isSel ? 'selected' : ''}>${esc(p.name)} (${esc(cleanHost(p.url))})</option>`;
+  });
+  if (acc.proxyUrl && !matched) {
+    options += `<option value="${esc(acc.proxyUrl)}" selected>Custom (${esc(cleanHost(acc.proxyUrl))})</option>`;
+  }
+  options += `<option value="__custom__">+ Input Custom...</option>`;
+
+  const proxyLabel = acc.proxyUrl 
+    ? `<div style="font-size:10px;color:var(--lime);margin-top:2px;font-family:monospace">🌐 ${esc(cleanHost(acc.proxyUrl))}</div>` 
+    : `<div style="font-size:10px;color:var(--dim);margin-top:2px">direct</div>`;
+
+  return `
+    <select onchange="onAccountProxyChange('${esc(acc.id)}', this)" style="background:var(--bg);border:1px solid ${acc.proxyUrl?'#3a5518':'var(--line)'};color:${acc.proxyUrl?'var(--lime)':'var(--dim)'};border-radius:6px;padding:3px 6px;font:inherit;font-size:11px;max-width:180px">
+      ${options}
+    </select>
+    ${proxyLabel}
+  `;
+}
+
+async function onAccountProxyChange(accId, sel) {
+  let val = sel.value;
+  if (val === '__custom__') {
+    const custom = prompt('Masukkan Proxy URL lengkap (http://user:pass@host:port):');
+    if (!custom) {
+      load();
+      return;
+    }
+    val = custom.trim();
+  }
+  try {
+    const r = await api('/admin/accounts/proxy', {
+      method: 'POST',
+      body: JSON.stringify({ accountId: accId, proxyUrl: val })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      toast(val ? 'Proxy akun diperbarui' : 'Proxy dilepas (Direct)');
+      load();
+      loadProxies();
+    } else {
+      toast('Gagal ubah proxy: ' + (j.error || 'unknown'), true);
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function batchAssignProxy() {
+  const cbs = document.querySelectorAll('.acc-check:checked');
+  const ids = Array.from(cbs).map(cb => cb.value);
+  if (ids.length === 0) {
+    toast('Pilih minimal 1 akun terlebih dahulu!', true);
+    return;
+  }
+  let val = $('batch-proxy-select').value;
+  if (val === '__custom__') {
+    const custom = prompt('Masukkan Proxy URL lengkap (http://user:pass@host:port):');
+    if (!custom) return;
+    val = custom.trim();
+  }
+  try {
+    const r = await api('/admin/accounts/proxy', {
+      method: 'POST',
+      body: JSON.stringify({ accountIds: ids, proxyUrl: val })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      toast(`Proxy berhasil dipasang ke ${j.updated || ids.length} akun`);
+      load();
+      loadProxies();
+    } else {
+      toast('Gagal pasang proxy: ' + (j.error || 'unknown'), true);
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+function updateProxySelects() {
+  const list = availableProxies || [];
+  const batchSel = $('batch-proxy-select');
+  if (batchSel) {
+    let opts = `<option value="">-- Pilih Proxy untuk Dipasang --</option>
+                <option value="">(Lepas Proxy / Direct)</option>`;
+    list.forEach(p => {
+      opts += `<option value="${esc(p.url)}">🌐 ${esc(p.name)} (${esc(cleanHost(p.url))})</option>`;
+    });
+    opts += `<option value="__custom__">+ Input Custom Proxy URL...</option>`;
+    batchSel.innerHTML = opts;
+  }
+
+  const addSel = $('a-proxy-select');
+  if (addSel) {
+    const cur = addSel.value;
+    let opts = `<option value="">-- Direct (Tanpa Proxy) --</option>`;
+    list.forEach(p => {
+      opts += `<option value="${esc(p.url)}" ${cur===p.url?'selected':''}>🌐 ${esc(p.name)} (${esc(cleanHost(p.url))})</option>`;
+    });
+    opts += `<option value="__custom__" ${cur==='__custom__'?'selected':''}>+ Input Custom Proxy URL</option>`;
+    addSel.innerHTML = opts;
+  }
+}
+
+function onAddProxySelect(val) {
+  const customRow = $('a-proxy-custom-row');
+  const input = $('a-proxy');
+  if (val === '__custom__') {
+    customRow.style.display = 'block';
+    input.value = '';
+    input.focus();
+  } else {
+    customRow.style.display = 'none';
+    input.value = val;
+  }
+}
+
+async function loadProxies() {
+  try {
+    const r = await api('/admin/proxies');
+    const d = await r.json();
+    availableProxies = d.proxies || [];
+    renderProxies();
+    updateProxySelects();
+  } catch(e) {
+    if (e.message !== 'unauthorized') toast('Gagal memuat proxy: ' + e.message, true);
+  }
+}
+
+function renderProxies() {
+  const tbody = $('proxy-rows');
+  if (!tbody) return;
+  const list = availableProxies || [];
+  $('proxies-meta').textContent = `${list.length} active proxy pools`;
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="mut" style="text-align:center">Belum ada proxy pool terdaftar. Klik "+ PROXY" untuk menambahkan.</td></tr>';
+    return;
+  }
+
+  const accounts = lastAccountsData || [];
+  tbody.innerHTML = list.map(p => {
+    const usedBy = accounts.filter(a => a.proxyUrl === p.url);
+    const badges = usedBy.length > 0 
+      ? usedBy.map(a => `<span style="display:inline-block;padding:2px 6px;background:#142918;border:1px solid #22543d;border-radius:4px;font-size:10px;margin:2px 4px 2px 0;color:var(--lime)">${esc(a.email.split('@')[0])}</span>`).join('')
+      : '<span class="mut" style="font-size:11px">(belum dipakai akun manapun)</span>';
+
+    return `
+      <tr>
+        <td><b style="color:var(--tx);font-size:13px">${esc(p.name)}</b></td>
+        <td>
+          <code style="background:var(--bg);padding:3px 6px;border-radius:4px;border:1px solid var(--line);font-size:11px">${esc(p.url)}</code>
+        </td>
+        <td id="proxy-test-cell-${esc(p.id)}">
+          <button class="test" onclick="testProxyItem('${esc(p.id)}', '${esc(p.url)}', this)">tes ping</button>
+        </td>
+        <td>${badges}</td>
+        <td>
+          <button onclick="editProxy('${esc(p.id)}')">edit</button>
+          <button class="danger" onclick="deleteProxy('${esc(p.id)}', '${esc(p.name)}')">hapus</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function testProxyItem(id, url, btn) {
+  btn.disabled = true;
+  btn.textContent = 'testing...';
+  const cell = $('proxy-test-cell-' + id);
+  try {
+    const r = await api('/admin/proxies/test', {
+      method: 'POST',
+      body: JSON.stringify({ url })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      cell.innerHTML = `
+        <span style="color:var(--lime);font-weight:700;font-size:11px">● OK (${j.latencyMs}ms)</span>
+        <div style="font-size:10px;color:var(--dim);font-family:monospace">IP: ${esc(j.ip || 'ok')}</div>
+      `;
+    } else {
+      cell.innerHTML = `<span style="color:var(--red);font-size:11px" title="${esc(j.error||'')}">FAIL: ${esc((j.error||'').slice(0,35))}</span>`;
+    }
+  } catch(e) {
+    cell.innerHTML = `<span style="color:var(--red);font-size:11px">ERR: ${esc(e.message)}</span>`;
+  }
+}
+
+function openProxyModal(existing) {
+  $('proxy-box').style.display = 'block';
+  $('proxy-box-title').textContent = existing ? 'Edit Proxy Pool' : 'Tambah Proxy Pool Baru';
+  $('proxy-id').value = existing ? existing.id : '';
+  $('proxy-name').value = existing ? existing.name : '';
+  $('proxy-url').value = existing ? existing.url : '';
+  $('proxy-test-status').innerHTML = '';
+}
+
+function closeProxyModal() {
+  $('proxy-box').style.display = 'none';
+}
+
+async function testProxyInModal(btn) {
+  const url = $('proxy-url').value.trim();
+  if (!url) {
+    toast('Isi URL proxy terlebih dahulu', true);
+    return;
+  }
+  btn.disabled = true;
+  const status = $('proxy-test-status');
+  status.innerHTML = '<span style="color:var(--amber)">Menguji koneksi proxy...</span>';
+  try {
+    const r = await api('/admin/proxies/test', {
+      method: 'POST',
+      body: JSON.stringify({ url })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      status.innerHTML = `<span style="color:var(--lime);font-weight:700">✓ KONEKSI OK: ${esc(j.ip||'')} (${j.latencyMs}ms)</span>`;
+    } else {
+      status.innerHTML = `<span style="color:var(--red);font-weight:700">✗ GAGAL: ${esc(j.error||'')}</span>`;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;
+  }
+  btn.disabled = false;
+}
+
+async function saveProxy() {
+  const id = $('proxy-id').value;
+  const name = $('proxy-name').value.trim();
+  const url = $('proxy-url').value.trim();
+  if (!name || !url) {
+    toast('Nama dan URL proxy wajib diisi', true);
+    return;
+  }
+  try {
+    const r = await api('/admin/proxies', {
+      method: 'POST',
+      body: JSON.stringify({ id: id || undefined, name, url })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      toast(`Proxy "${name}" berhasil disimpan!`);
+      closeProxyModal();
+      loadProxies();
+      load();
+    } else {
+      toast('Gagal simpan proxy: ' + (j.error || 'unknown'), true);
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  }
+}
+
+async function deleteProxy(id, name) {
+  if (!confirm(`Hapus proxy pool "${name}"?`)) return;
+  try {
+    const r = await api('/admin/proxies?id=' + encodeURIComponent(id), { method: 'DELETE' });
+    const j = await r.json();
+    if (j.ok) {
+      toast(`Proxy "${name}" dihapus`);
+      loadProxies();
+      load();
+    }
+  } catch(e) {
+    toast('Gagal hapus proxy: ' + e.message, true);
+  }
+}
+
+function editProxy(id) {
+  const p = (availableProxies || []).find(x => x.id === id);
+  if (p) openProxyModal(p);
+}
+
 // ---------- api keys ----------
 async function loadKeys(){
   try {
@@ -1094,7 +1459,7 @@ function fmtCompact(n) {
 
 function setNav(tab) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.id === 'nav-btn-' + tab));
-  const sections = ['usage', 'accounts', 'combos', 'keys', 'quota', 'console'];
+  const sections = ['usage', 'accounts', 'combos', 'proxies', 'keys', 'quota', 'console'];
   sections.forEach(s => {
     const el = $('section-' + s);
     if (!el) return;
@@ -1241,7 +1606,7 @@ function renderUsage() {
   }
 }
 
-function loadAll(){ load(); loadCombos(); loadKeys(); loadQuota(1); loadUsage(1); }
+function loadAll(){ load(); loadCombos(); loadProxies(); loadKeys(); loadQuota(1); loadUsage(1); }
 
 async function addAccount(){
   const body = {
@@ -1276,7 +1641,7 @@ async function importFile(){
 }
 
 if (TOK) { fetch('/admin/accounts', {headers:{'Authorization':'Bearer '+TOK}}).then(r => {
-  if (r.ok) { $('login').style.display='none'; $('app').style.display='block'; load(); loadCombos(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load,15000); setInterval(loadCombos,30000); setInterval(loadUsage,15000); setInterval(loadQuota,60000); }
+  if (r.ok) { $('login').style.display='none'; $('app').style.display='block'; load(); loadCombos(); loadProxies(); loadKeys(); loadQuota(); loadUsage(); connectLogs(); setInterval(load,15000); setInterval(loadCombos,30000); setInterval(loadProxies,30000); setInterval(loadUsage,15000); setInterval(loadQuota,60000); }
   else showLogin();
 }).catch(showLogin); } else showLogin();
 </script>

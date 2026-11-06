@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1882,6 +1883,7 @@ func handleAccounts(w http.ResponseWriter, r *http.Request) {
 			"autoDeleteDepleted": store.AutoDeleteDepleted,
 			"autoDeleteMode":     mode,
 			"accountRouting":     routing,
+			"proxyPools":         store.ProxyPools,
 		})
 	case http.MethodPost:
 		var in struct {
@@ -2253,6 +2255,157 @@ func handleCombos(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func handleProxies(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"proxies": store.getProxyPools(),
+		})
+	case http.MethodPost:
+		var in struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		in.URL = strings.TrimSpace(in.URL)
+		if in.Name == "" || in.URL == "" {
+			http.Error(w, `{"error":"nama dan URL proxy tidak boleh kosong"}`, http.StatusBadRequest)
+			return
+		}
+		if u, err := url.Parse(in.URL); err != nil || u.Scheme == "" || u.Host == "" {
+			http.Error(w, `{"error":"format URL proxy tidak valid (mis. http://user:pass@host:port)"}`, http.StatusBadRequest)
+			return
+		}
+		p := &ProxyPool{
+			ID:   in.ID,
+			Name: in.Name,
+			URL:  in.URL,
+		}
+		if err := store.upsertProxyPool(p); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		slogf("[proxy] Proxy pool %q (%s) tersimpan", p.Name, p.URL)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    true,
+			"proxy": p,
+		})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, `{"error":"id parameter required"}`, http.StatusBadRequest)
+			return
+		}
+		if store.deleteProxyPool(id) {
+			slogf("[proxy] Proxy pool %q dihapus", id)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		} else {
+			http.Error(w, `{"error":"proxy not found"}`, http.StatusNotFound)
+		}
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func handleProxiesTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+	rawURL := strings.TrimSpace(in.URL)
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		http.Error(w, `{"error":"URL proxy tidak valid (mis. http://user:pass@host:port)"}`, http.StatusBadRequest)
+		return
+	}
+
+	transport := defaultTransport.Clone()
+	transport.Proxy = http.ProxyURL(u)
+	client := &http.Client{
+		Timeout:   8 * time.Second,
+		Transport: transport,
+	}
+
+	start := time.Now()
+	req, _ := http.NewRequest("GET", "https://api.ipify.org?format=json", nil)
+	req.Header.Set("User-Agent", "curl/7.68.0")
+	resp, err := client.Do(req)
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":        false,
+			"error":     err.Error(),
+			"latencyMs": latency,
+		})
+		return
+	}
+	defer resp.Body.Close()
+	var ipRes struct {
+		IP string `json:"ip"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ipRes)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":        true,
+		"status":    resp.StatusCode,
+		"latencyMs": latency,
+		"ip":        ipRes.IP,
+	})
+}
+
+func handleAccountSetProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		AccountID  string   `json:"accountId"`
+		AccountIDs []string `json:"accountIds"`
+		ProxyURL   string   `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+	if len(in.AccountIDs) > 0 {
+		cnt := store.setAccountsBatchProxy(in.AccountIDs, in.ProxyURL)
+		slogf("[account-proxy] Batch set proxy (%d akun) -> %q", cnt, in.ProxyURL)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":      true,
+			"updated": cnt,
+		})
+		return
+	}
+	if in.AccountID == "" {
+		http.Error(w, `{"error":"accountId required"}`, http.StatusBadRequest)
+		return
+	}
+	if store.setAccountProxy(in.AccountID, in.ProxyURL) {
+		slogf("[account-proxy] Set proxy akun %s -> %q", in.AccountID, in.ProxyURL)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok": true,
+		})
+	} else {
+		http.Error(w, `{"error":"account not found"}`, http.StatusNotFound)
 	}
 }
 
@@ -3222,6 +3375,9 @@ func main() {
 	mux.HandleFunc("/admin/accounts/prune-depleted", adminAuth(handlePruneDepleted))
 	mux.HandleFunc("/admin/settings", adminAuth(handleSettings))
 	mux.HandleFunc("/admin/combos", adminAuth(handleCombos))
+	mux.HandleFunc("/admin/proxies", adminAuth(handleProxies))
+	mux.HandleFunc("/admin/proxies/test", adminAuth(handleProxiesTest))
+	mux.HandleFunc("/admin/accounts/proxy", adminAuth(handleAccountSetProxy))
 	mux.HandleFunc("/admin/quota", adminAuth(handleQuota))
 	mux.HandleFunc("/admin/usage", adminAuth(handleUsage))
 	mux.HandleFunc("/admin/keys", adminAuth(handleAPIKeys))

@@ -55,6 +55,13 @@ type ComboModel struct {
 	cursor             int      `json:"-"`
 }
 
+type ProxyPool struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
 func (c *ComboModel) resolveModelsLocked(promptTokens int) []string {
 	n := len(c.Models)
 	if n == 0 {
@@ -133,6 +140,7 @@ type Store struct {
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "both" | "gemini" | "claude"
 	AccountRouting     string        `json:"accountRouting,omitempty"` // "round-robin" | "sticky"
 	Combos             []*ComboModel `json:"combos,omitempty"`
+	ProxyPools         []*ProxyPool  `json:"proxyPools,omitempty"`
 	rr                 int           // round-robin cursor
 }
 
@@ -166,6 +174,9 @@ func loadStore(path string) (*Store, error) {
 		}
 		_ = s.save()
 	}
+	if s.ProxyPools == nil {
+		s.ProxyPools = []*ProxyPool{}
+	}
 	return s, nil
 }
 
@@ -177,6 +188,7 @@ type storeSnapshot struct {
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"`
 	AccountRouting     string        `json:"accountRouting,omitempty"`
 	Combos             []*ComboModel `json:"combos,omitempty"`
+	ProxyPools         []*ProxyPool  `json:"proxyPools,omitempty"`
 }
 
 // save writes the store to disk. Caller MUST hold s.mu.
@@ -199,6 +211,11 @@ func (s *Store) save() error {
 		}
 		combos[i] = &copyC
 	}
+	pools := make([]*ProxyPool, len(s.ProxyPools))
+	for i, p := range s.ProxyPools {
+		copyP := *p
+		pools[i] = &copyP
+	}
 
 	snap := storeSnapshot{
 		Accounts:           accs,
@@ -208,6 +225,7 @@ func (s *Store) save() error {
 		AutoDeleteMode:     s.AutoDeleteMode,
 		AccountRouting:     s.AccountRouting,
 		Combos:             combos,
+		ProxyPools:         pools,
 	}
 
 	b, err := json.MarshalIndent(snap, "", "  ")
@@ -438,6 +456,84 @@ func (s *Store) deleteCombo(idOrName string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Store) getProxyPools() []*ProxyPool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*ProxyPool, len(s.ProxyPools))
+	copy(out, s.ProxyPools)
+	return out
+}
+
+func (s *Store) upsertProxyPool(p *ProxyPool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p.ID == "" {
+		p.ID = newID()
+	}
+	if p.CreatedAt == "" {
+		p.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	found := false
+	for i, existing := range s.ProxyPools {
+		if existing.ID == p.ID || existing.Name == p.Name {
+			p.ID = existing.ID
+			s.ProxyPools[i] = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.ProxyPools = append(s.ProxyPools, p)
+	}
+	return s.save()
+}
+
+func (s *Store) deleteProxyPool(idOrName string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.ProxyPools {
+		if p.ID == idOrName || p.Name == idOrName {
+			s.ProxyPools = append(s.ProxyPools[:i], s.ProxyPools[i+1:]...)
+			s.save()
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) setAccountProxy(accountID string, proxyURL string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.Accounts {
+		if a.ID == accountID || a.Email == accountID {
+			a.ProxyURL = strings.TrimSpace(proxyURL)
+			s.save()
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) setAccountsBatchProxy(accountIDs []string, proxyURL string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cnt := 0
+	targetMap := make(map[string]bool)
+	for _, id := range accountIDs {
+		targetMap[id] = true
+	}
+	for _, a := range s.Accounts {
+		if targetMap[a.ID] || targetMap[a.Email] {
+			a.ProxyURL = strings.TrimSpace(proxyURL)
+			cnt++
+		}
+	}
+	if cnt > 0 {
+		s.save()
+	}
+	return cnt
 }
 
 // =====================================================================
