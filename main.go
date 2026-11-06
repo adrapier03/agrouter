@@ -2368,8 +2368,15 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 		"mode":     1,
 	})
 	if err == nil {
-		if tier, ok := lca["currentTier"].(map[string]interface{}); ok {
-			snap.Tier, _ = tier["name"].(string)
+		if pt, ok := lca["paidTier"].(map[string]interface{}); ok {
+			if pname, _ := pt["name"].(string); pname != "" && pname != "Antigravity Starter Quota" {
+				snap.Tier = pname
+			}
+		}
+		if snap.Tier == "" {
+			if tier, ok := lca["currentTier"].(map[string]interface{}); ok {
+				snap.Tier, _ = tier["name"].(string)
+			}
 		}
 	}
 
@@ -2378,6 +2385,8 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 	var geminiReset string
 	var claudeFrac *float64
 	var claudeReset string
+	var argonFrac *float64
+	var argonReset string
 
 	uqs, err := post("/v1internal:retrieveUserQuotaSummary", map[string]interface{}{
 		"project": a.ProjectID,
@@ -2387,15 +2396,15 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 		if g, ok := uqs["groups"].([]interface{}); ok {
 			groups = g
 		}
-		for _, gv := range groups {
-			gm, ok := gv.(map[string]interface{})
+		for _, g := range groups {
+			gm, ok := g.(map[string]interface{})
 			if !ok {
 				continue
 			}
 			gName, _ := gm["displayName"].(string)
 			buckets, _ := gm["buckets"].([]interface{})
-			for _, bv := range buckets {
-				bm, ok := bv.(map[string]interface{})
+			for _, b := range buckets {
+				bm, ok := b.(map[string]interface{})
 				if !ok {
 					continue
 				}
@@ -2414,7 +2423,14 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 				}
 
 				lower := strings.ToLower(bid + " " + bName + " " + gName)
-				if strings.Contains(lower, "gemini") {
+				if strings.Contains(lower, "argon") {
+					argonFrac = &frac
+					argonReset = reset
+					snap.Quotas["Gemini 4 Argon (Weekly)"] = modelQuota{
+						RemainingPct: frac * 100,
+						ResetAt:      reset,
+					}
+				} else if strings.Contains(lower, "gemini") {
 					geminiFrac = &frac
 					geminiReset = reset
 					snap.Quotas["Gemini (Weekly)"] = modelQuota{
@@ -2547,6 +2563,36 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 			}
 		}
 	}
+
+	// If account has Google AI Pro subscription, ensure Gemini 4 Argon is visible in quotas!
+	isPro := strings.Contains(snap.Tier, "Pro") || strings.Contains(fmt.Sprintf("%v", lca["paidTier"]), "pro") || strings.Contains(fmt.Sprintf("%v", lca["paidTier"]), "g1-pro-tier")
+	if isPro {
+		pct := 100.0
+		if argonFrac != nil {
+			pct = *argonFrac * 100
+		} else if geminiFrac != nil {
+			pct = *geminiFrac * 100
+		}
+		rst := argonReset
+		if rst == "" {
+			rst = geminiReset
+		}
+		if _, exists := snap.Quotas["Gemini 4 Argon (Weekly)"]; !exists {
+			snap.Quotas["Gemini 4 Argon (Weekly)"] = modelQuota{
+				RemainingPct: pct,
+				ResetAt:      rst,
+			}
+		}
+		snap.Quotas["gemini-4-argon"] = modelQuota{
+			RemainingPct: pct,
+			ResetAt:      rst,
+		}
+		snap.Quotas["gemini-4-argon-high"] = modelQuota{
+			RemainingPct: pct,
+			ResetAt:      rst,
+		}
+	}
+
 	return snap, nil
 }
 
