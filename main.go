@@ -338,16 +338,16 @@ func parseContentParts(c interface{}) []agPart {
 var modelSynonym = map[string]string{
 	"deepseek-v4-pro-max":        "deepseek-v4-pro",
 	"deepseek-v4-pro-none":       "deepseek-v4-pro",
-	"claude-3-5-sonnet":          "claude-sonnet-5-5-high",
-	"claude-3-7-sonnet":          "claude-sonnet-5-5-high",
-	"claude-sonnet-4-6":          "claude-sonnet-5-5-high",
-	"claude-3-5-sonnet-thinking": "claude-opus-5-5-high",
-	"claude-3-7-sonnet-thinking": "claude-opus-5-5-high",
-	"claude-opus-4-6":            "claude-opus-5-5-high",
-	"claude-opus-4-6-thinking":   "claude-opus-5-5-high",
+	"claude-3-5-sonnet":          "claude-sonnet-4-6",
+	"claude-3-7-sonnet":          "claude-sonnet-4-6",
+	"claude-3-5-sonnet-thinking": "claude-opus-4-6-thinking",
+	"claude-3-7-sonnet-thinking": "claude-opus-4-6-thinking",
+	"claude-opus-4-6":            "claude-opus-4-6-thinking",
 	"imagen-3":                   "gemini-3.1-flash-image",
 	"dall-e-3":                   "gemini-3.1-flash-image",
 	"gemini-image":               "gemini-3.1-flash-image",
+	"argon-4":                    "gemini-4-argon",
+	"argon":                      "gemini-4-argon",
 }
 
 // tieredRe: gemini-3.6/3.7/3.8 flash levels ride on the bare "-tiered" upstream id,
@@ -363,7 +363,19 @@ func resolveUpstreamModel(m string) (string, *int) {
 	m = strings.TrimPrefix(m, "ag/")
 	m = strings.TrimPrefix(m, "agr/")
 	if s, ok := modelSynonym[m]; ok {
-		return s, nil
+		m = s
+	}
+	if m == "gemini-4-argon" || m == "gemini-4-argon-medium" {
+		b := 8192
+		return "gemini-4-argon", &b
+	}
+	if m == "gemini-4-argon-high" {
+		b := 24576
+		return "gemini-4-argon", &b
+	}
+	if m == "gemini-4-argon-low" {
+		b := 1024
+		return "gemini-4-argon", &b
 	}
 	if m == "gemini-3.8-flash" || m == "gemini-3.7-flash" || m == "gemini-3.6-flash" {
 		b := 24576
@@ -1458,8 +1470,27 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				slogf("[attempt %d] %s upstream %d: %.500s", attempt, acc.Email, resp.StatusCode, lastErrBody)
 
 				// 404 NOT_FOUND = Model does not exist upstream on Antigravity.
-				// Rotating accounts cannot fix an unknown model name.
+				// In Antigravity, Google Pro accounts use claude-opus-5-5-high / claude-sonnet-5-5-high,
+				// while free/gsuite accounts use claude-opus-4-6-thinking / claude-sonnet-4-6.
 				if resp.StatusCode == http.StatusNotFound {
+					altModel := ""
+					if upstreamModel == "claude-opus-4-6-thinking" {
+						altModel = "claude-opus-5-5-high"
+					} else if upstreamModel == "claude-opus-5-5-high" {
+						altModel = "claude-opus-4-6-thinking"
+					} else if upstreamModel == "claude-sonnet-4-6" {
+						altModel = "claude-sonnet-5-5-high"
+					} else if upstreamModel == "claude-sonnet-5-5-high" {
+						altModel = "claude-sonnet-4-6"
+					}
+
+					if altModel != "" {
+						slogf("[tier-fallback] %s returned 404 for %s, trying tier alternate: %s", acc.Email, upstreamModel, altModel)
+						upstreamModel = altModel
+						agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
+						continue
+					}
+
 					if comboName != "" && mIdx < len(candidateModels)-1 {
 						slogf("[combo %s] model %s returned 404, falling back to next candidate model", comboName, reqModel)
 						break
