@@ -316,7 +316,7 @@ async function processAccount(idx, acc, headless) {
     try {
       const lca = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${tok.access_token}`, 'Content-Type': 'application/json', 'User-Agent': 'antigravity/ide/2.1.1 darwin/arm64' },
+        headers: { Authorization: `Bearer ${tok.access_token}`, 'Content-Type': 'application/json', 'User-Agent': 'antigravity/ide/2.23.0 darwin/arm64' },
         body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' }, mode: 1 }),
       });
       if (lca.ok) {

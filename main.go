@@ -1436,6 +1436,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			// UA "antigravity/ide/2.1.1 darwin/arm64" + body {project, model, request{...}}.
 			// Verified 200 against daily-cloudcode-pa on 2026-08-28 (GeminiCLI UA → 403 #3501).
 			req.Header.Set("User-Agent", agUA)
+			req.Header.Set("X-Client-Name", "antigravity")
+			req.Header.Set("X-Client-Version", "2.23.0")
 			client := store.clientFor(acc)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -1575,6 +1577,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						req2.Header.Set("Content-Type", "application/json")
 						req2.Header.Set("Authorization", "Bearer "+tok)
 						req2.Header.Set("User-Agent", agUA)
+						req2.Header.Set("X-Client-Name", "antigravity")
+						req2.Header.Set("X-Client-Version", "2.23.0")
 						resp2, err2 := client.Do(req2)
 						if err2 != nil {
 							slogf("[retry %d] %s transport error: %v", bi+1, acc.Email, err2)
@@ -2498,7 +2502,7 @@ func fetchAccountQuota(a *Account, tok string) (*quotaSnapshot, error) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("User-Agent", agUA)
 		req.Header.Set("X-Client-Name", "antigravity")
-		req.Header.Set("X-Client-Version", "2.1.1")
+		req.Header.Set("X-Client-Version", "2.23.0")
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
@@ -2866,6 +2870,224 @@ func handleQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- GSuite OAuth Onboarding Job ----------
+// ---------- OAuth Flow (Sign in with Google Antigravity) ----------
+
+func handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	if redirectURI == "" {
+		redirectURI = "http://localhost:14451/callback"
+	}
+	state := newID()
+	scopes := "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid"
+
+	v := url.Values{}
+	v.Set("client_id", agClientID)
+	v.Set("redirect_uri", redirectURI)
+	v.Set("response_type", "code")
+	v.Set("scope", scopes)
+	v.Set("access_type", "offline")
+	v.Set("prompt", "consent")
+	v.Set("state", state)
+
+	authURL := "https://accounts.google.com/o/oauth2/v2/auth?" + v.Encode()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":          true,
+		"authUrl":     authURL,
+		"state":       state,
+		"redirectUri": redirectURI,
+	})
+}
+
+func handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Code        string `json:"code"`
+		RedirectURI string `json:"redirectUri"`
+		ProxyURL    string `json:"proxyUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"ok":false,"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+
+	code := strings.TrimSpace(in.Code)
+	if code == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "Kode authorization wajib diisi"})
+		return
+	}
+
+	// Extract code if user pasted a full callback URL
+	if strings.Contains(code, "?") || strings.Contains(code, "&") || strings.HasPrefix(code, "http") {
+		if parsed, err := url.Parse(code); err == nil {
+			if qCode := parsed.Query().Get("code"); qCode != "" {
+				code = qCode
+			}
+		}
+	}
+	if strings.HasPrefix(code, "code=") {
+		code = strings.TrimPrefix(code, "code=")
+	}
+
+	redirectURI := in.RedirectURI
+	if redirectURI == "" {
+		redirectURI = "http://localhost:14451/callback"
+	}
+
+	form := url.Values{}
+	form.Set("client_id", agClientID)
+	form.Set("client_secret", agClientSecret)
+	form.Set("code", code)
+	form.Set("grant_type", "authorization_code")
+	form.Set("redirect_uri", redirectURI)
+
+	// Use proxy if provided
+	client := &http.Client{Timeout: 20 * time.Second}
+	if in.ProxyURL != "" {
+		if pu, err := url.Parse(in.ProxyURL); err == nil {
+			client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(pu),
+			}
+		}
+	}
+
+	tokenReq, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	tokenResp, err := client.Do(tokenReq)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "Koneksi ke Google OAuth gagal: " + err.Error()})
+		return
+	}
+	defer tokenResp.Body.Close()
+	bodyBytes, _ := io.ReadAll(tokenResp.Body)
+
+	if tokenResp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(tokenResp.StatusCode)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": fmt.Sprintf("Google OAuth error (%d): %s", tokenResp.StatusCode, string(bodyBytes))})
+		return
+	}
+
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		Error        string `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &tr); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "Gagal membaca respons token Google"})
+		return
+	}
+
+	if tr.RefreshToken == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "Google tidak mengembalikan refresh_token. Pastikan izin di-approve atau login ulang."})
+		return
+	}
+
+	// Fetch user email
+	email := ""
+	uReq, _ := http.NewRequest(http.MethodGet, "https://www.googleapis.com/oauth2/v3/userinfo", nil)
+	uReq.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	if uResp, err := client.Do(uReq); err == nil && uResp.StatusCode == http.StatusOK {
+		var uInfo struct {
+			Email string `json:"email"`
+		}
+		_ = json.NewDecoder(uResp.Body).Decode(&uInfo)
+		uResp.Body.Close()
+		email = strings.TrimSpace(uInfo.Email)
+	}
+
+	// Discover project via loadCodeAssist
+	projectID := "aicode-consumers"
+	lcaBody := map[string]interface{}{
+		"metadata": map[string]string{
+			"ideType":    "IDE_UNSPECIFIED",
+			"platform":   "PLATFORM_UNSPECIFIED",
+			"pluginType": "GEMINI",
+		},
+		"mode": 1,
+	}
+	lcaBytes, _ := json.Marshal(lcaBody)
+	lcaReq, _ := http.NewRequest(http.MethodPost, "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", bytes.NewReader(lcaBytes))
+	lcaReq.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	lcaReq.Header.Set("Content-Type", "application/json")
+	lcaReq.Header.Set("User-Agent", agUA)
+	lcaReq.Header.Set("X-Client-Name", "antigravity")
+	lcaReq.Header.Set("X-Client-Version", "2.23.0")
+	if lcaResp, err := client.Do(lcaReq); err == nil && lcaResp.StatusCode == http.StatusOK {
+		var lcaData struct {
+			Project string `json:"cloudaicompanionProject"`
+		}
+		_ = json.NewDecoder(lcaResp.Body).Decode(&lcaData)
+		lcaResp.Body.Close()
+		if lcaData.Project != "" {
+			projectID = lcaData.Project
+		}
+	}
+
+	// Upsert to store
+	store.mu.Lock()
+	var acc *Account
+	for _, a := range store.Accounts {
+		if email != "" && a.Email == email {
+			acc = a
+			break
+		}
+	}
+	if acc == nil {
+		acc = &Account{
+			ID:     newID(),
+			Email:  email,
+			Active: true,
+		}
+		store.Accounts = append(store.Accounts, acc)
+	}
+	acc.RefreshTok = tr.RefreshToken
+	acc.AccessTok = tr.AccessToken
+	if tr.ExpiresIn > 0 {
+		acc.ExpiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
+	acc.ProjectID = projectID
+	if in.ProxyURL != "" {
+		acc.ProxyURL = in.ProxyURL
+	}
+	acc.Active = true
+	acc.LastErr = ""
+	_ = store.save()
+	store.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":        true,
+		"id":        acc.ID,
+		"email":     acc.Email,
+		"projectId": acc.ProjectID,
+	})
+}
+
 type GSuiteJob struct {
 	mu        sync.Mutex
 	Running   bool      `json:"running"`
@@ -3212,7 +3434,7 @@ func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 		}
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("Authorization", "Bearer "+tok)
-		upReq.Header.Set("User-Agent", "antigravity/ide/2.1.1 darwin/arm64")
+		upReq.Header.Set("User-Agent", agUA)
 		upReq.Header.Set("X-Goog-Api-Client", "google-genai/0.1.1 gl-node/24.18.0")
 
 		resp, err := httpClient.Do(upReq)
@@ -3395,6 +3617,8 @@ func main() {
 	mux.HandleFunc("/admin/proxies", adminAuth(handleProxies))
 	mux.HandleFunc("/admin/proxies/test", adminAuth(handleProxiesTest))
 	mux.HandleFunc("/admin/accounts/proxy", adminAuth(handleAccountSetProxy))
+	mux.HandleFunc("/admin/oauth/authorize", adminAuth(handleOAuthAuthorize))
+	mux.HandleFunc("/admin/oauth/exchange", adminAuth(handleOAuthExchange))
 	mux.HandleFunc("/admin/quota", adminAuth(handleQuota))
 	mux.HandleFunc("/admin/usage", adminAuth(handleUsage))
 	mux.HandleFunc("/admin/keys", adminAuth(handleAPIKeys))

@@ -543,7 +543,7 @@ func (s *Store) setAccountsBatchProxy(accountIDs []string, proxyURL string) int 
 const (
 	tokenURL = "https://oauth2.googleapis.com/token"
 	agHost   = "https://daily-cloudcode-pa.googleapis.com"
-	agUA     = "antigravity/ide/2.1.1 darwin/arm64"
+	agUA     = "antigravity/ide/2.23.0 darwin/arm64"
 )
 
 var (

@@ -179,13 +179,58 @@ button.test:disabled{opacity:.5; cursor:wait}
   <!-- SECTION: ACCOUNTS -->
   <div id="section-accounts" class="sec-block">
     <div id="addbox">
-      <div style="display:flex;gap:10px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px">
-        <button id="tab-btn-gsuite" onclick="switchAddTab('gsuite')" style="background:var(--panel2);color:var(--lime);font-weight:700">⚡ Auto Onboard GSuite (Email|Password)</button>
+      <div style="display:flex;gap:10px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px;flex-wrap:wrap">
+        <button id="tab-btn-oauth" onclick="switchAddTab('oauth')" style="background:var(--panel2);color:var(--lime);font-weight:700">🔑 Sign In Google OAuth</button>
+        <button id="tab-btn-gsuite" onclick="switchAddTab('gsuite')" style="background:transparent;color:var(--dim)">⚡ Auto Onboard GSuite (Headless)</button>
         <button id="tab-btn-manual" onclick="switchAddTab('manual')" style="background:transparent;color:var(--dim)">Manual (RefreshToken / JSON)</button>
       </div>
 
-      <!-- Tab 1: GSuite Auto Onboard -->
-      <div id="add-tab-gsuite">
+      <!-- Tab 1: Google OAuth Sign-in -->
+      <div id="add-tab-oauth">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:12px;line-height:1.5">
+          Masuk dengan akun Google Anda untuk mengotorisasi Antigravity secara resmi seperti di 9router. Token, email, dan projectId akan terdeteksi dan tersimpan otomatis ke dalam pool agrouter.
+        </div>
+
+        <div style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--tx);margin-bottom:6px">Langkah 1: Tetapkan Proxy untuk Akun Ini (Opsional)</div>
+          <div class="row" style="margin-top:0">
+            <select id="oauth-proxy-select" onchange="onOAuthProxySelect(this.value)" style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:8px;font:inherit;font-size:12px">
+              <option value="">-- Direct (Tanpa Proxy) --</option>
+              <option value="__custom__">+ Input Custom Proxy URL</option>
+            </select>
+          </div>
+          <div class="row" id="oauth-proxy-custom-row" style="display:none;margin-top:8px">
+            <input id="oauth-proxy-custom" placeholder="proxyUrl (http://user:pass@host:port)" style="width:100%">
+          </div>
+        </div>
+
+        <div style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--tx);margin-bottom:6px">Langkah 2: Buka Halaman Login Google</div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button id="btn-oauth-open" onclick="openOAuthLogin()" style="background:var(--lime);color:#111;font-weight:700;padding:8px 16px;font-size:13px">
+              🔗 BUKA HALAMAN LOGIN GOOGLE
+            </button>
+            <span style="font-size:11px;color:var(--dim)" id="oauth-authurl-hint">Klik tombol untuk membuka tab login Google Antigravity.</span>
+          </div>
+        </div>
+
+        <div style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--tx);margin-bottom:6px">Langkah 3: Selesaikan Otorisasi</div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:8px;line-height:1.4">
+            Setelah login & klik <b>Continue / Izinkan</b> di Google, browser akan me-redirect ke callback loopback (atau menampilkan pesan error <i>site can't be reached</i> di localhost). <b style="color:var(--tx)">Salin seluruh isi address bar browser Anda (atau kode auth-nya)</b>, lalu tempel di kotak berikut:
+          </div>
+          <textarea id="oauth-code-input" style="height:65px;margin-bottom:10px" placeholder="Contoh: http://localhost:14451/callback?code=4/0A...&state=... (atau tempel kodenya saja)"></textarea>
+          <div class="row" style="margin-top:0">
+            <button id="btn-oauth-submit" onclick="submitOAuthCode()" style="background:#1d2b13;color:var(--lime);border:1px solid #3a5518;font-weight:700;padding:8px 18px">
+              ✓ SELESAIKAN & SIMPAN KE AGROUTER
+            </button>
+            <span id="oauth-submit-status" style="font-size:12px;color:var(--dim);margin-left:10px"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: GSuite Auto Onboard -->
+      <div id="add-tab-gsuite" style="display:none">
         <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
           Masukkan akun GSuite (format: <b style="color:var(--tx)">email|password</b> atau <b style="color:var(--tx)">email:password</b> per baris). Sistem otomatis login headless via CloakBrowser, approve OAuth consent, ambil refreshToken & projectId, dan langsung menambahkan akun ke pool agrouter:
         </div>
@@ -199,7 +244,7 @@ button.test:disabled{opacity:.5; cursor:wait}
         </div>
       </div>
 
-      <!-- Tab 2: Manual -->
+      <!-- Tab 3: Manual -->
       <div id="add-tab-manual" style="display:none">
         <div class="row"><input id="a-email" placeholder="email"></div>
         <textarea id="a-rt" placeholder="refreshToken (paste)"></textarea>
@@ -696,28 +741,101 @@ async function batchAction(action) {
   }
 }
 
-// ---------- gsuite auto onboard ----------
+// ---------- account adding tabs & oauth ----------
+let currentOAuthRedirectUri = 'http://localhost:14451/callback';
+
 function switchAddTab(tab) {
-  if (tab === 'gsuite') {
-    $('add-tab-gsuite').style.display = 'block';
-    $('add-tab-manual').style.display = 'none';
-    $('tab-btn-gsuite').style.color = 'var(--lime)';
-    $('tab-btn-gsuite').style.background = 'var(--panel2)';
-    $('tab-btn-gsuite').style.fontWeight = '700';
-    $('tab-btn-manual').style.color = 'var(--dim)';
-    $('tab-btn-manual').style.background = 'transparent';
-    $('tab-btn-manual').style.fontWeight = 'normal';
+  const tabs = ['oauth', 'gsuite', 'manual'];
+  tabs.forEach(t => {
+    const el = $('add-tab-' + t);
+    const btn = $('tab-btn-' + t);
+    if (el) el.style.display = (t === tab) ? 'block' : 'none';
+    if (btn) {
+      btn.style.color = (t === tab) ? 'var(--lime)' : 'var(--dim)';
+      btn.style.background = (t === tab) ? 'var(--panel2)' : 'transparent';
+      btn.style.fontWeight = (t === tab) ? '700' : 'normal';
+    }
+  });
+}
+
+function onOAuthProxySelect(val) {
+  const customRow = $('oauth-proxy-custom-row');
+  const input = $('oauth-proxy-custom');
+  if (val === '__custom__') {
+    customRow.style.display = 'block';
+    input.value = '';
+    input.focus();
   } else {
-    $('add-tab-gsuite').style.display = 'none';
-    $('add-tab-manual').style.display = 'block';
-    $('tab-btn-manual').style.color = 'var(--lime)';
-    $('tab-btn-manual').style.background = 'var(--panel2)';
-    $('tab-btn-manual').style.fontWeight = '700';
-    $('tab-btn-gsuite').style.color = 'var(--dim)';
-    $('tab-btn-gsuite').style.background = 'transparent';
-    $('tab-btn-gsuite').style.fontWeight = 'normal';
+    customRow.style.display = 'none';
+    input.value = val;
   }
 }
+
+async function openOAuthLogin() {
+  const btn = $('btn-oauth-open');
+  btn.disabled = true;
+  btn.textContent = 'Memuat URL Google...';
+  try {
+    const r = await api('/admin/oauth/authorize?redirect_uri=' + encodeURIComponent(currentOAuthRedirectUri));
+    const j = await r.json();
+    if (j.ok && j.authUrl) {
+      window.open(j.authUrl, '_blank', 'width=650,height=750');
+      toast('Tab login Google terbuka. Selesaikan login lalu salin URL hasilnya ke Langkah 3!');
+      $('oauth-code-input').focus();
+    } else {
+      toast('Gagal mendapatkan URL login: ' + (j.error || 'unknown'), true);
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔗 BUKA HALAMAN LOGIN GOOGLE';
+  }
+}
+
+async function submitOAuthCode() {
+  const raw = $('oauth-code-input').value.trim();
+  if (!raw) {
+    toast('Silakan tempel URL redirect atau kode autorisasi Google terlebih dahulu!', true);
+    return;
+  }
+  const selProxy = $('oauth-proxy-select').value;
+  const proxyUrl = selProxy === '__custom__' ? $('oauth-proxy-custom').value.trim() : selProxy;
+
+  const btn = $('btn-oauth-submit');
+  const status = $('oauth-submit-status');
+  btn.disabled = true;
+  status.innerHTML = '<span style="color:var(--amber)">Meng-exchange token ke Google...</span>';
+
+  try {
+    const r = await api('/admin/oauth/exchange', {
+      method: 'POST',
+      body: JSON.stringify({
+        code: raw,
+        redirectUri: currentOAuthRedirectUri,
+        proxyUrl: proxyUrl || ''
+      })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      toast(`Akun ${j.email || 'Google'} berhasil ditambahkan ke agrouter!`);
+      status.innerHTML = `<span style="color:var(--lime);font-weight:700">✓ Berhasil! Akun ${esc(j.email||'')} masuk.</span>`;
+      $('oauth-code-input').value = '';
+      load();
+      loadQuota(1);
+    } else {
+      status.innerHTML = `<span style="color:var(--red);font-weight:700">✗ Gagal: ${esc(j.error||'unknown error')}</span>`;
+      toast('Gagal otorisasi: ' + (j.error || 'unknown'), true);
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;
+    toast('Error: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- gsuite auto onboard ----------
 
 async function loadGSuiteFile(input) {
   const f = input.files[0];
@@ -1099,6 +1217,17 @@ function updateProxySelects() {
     });
     opts += `<option value="__custom__" ${cur==='__custom__'?'selected':''}>+ Input Custom Proxy URL</option>`;
     addSel.innerHTML = opts;
+  }
+
+  const oauthSel = $('oauth-proxy-select');
+  if (oauthSel) {
+    const cur = oauthSel.value;
+    let opts = `<option value="">-- Direct (Tanpa Proxy) --</option>`;
+    list.forEach(p => {
+      opts += `<option value="${esc(p.url)}" ${cur===p.url?'selected':''}>🌐 ${esc(p.name)} (${esc(cleanHost(p.url))})</option>`;
+    });
+    opts += `<option value="__custom__" ${cur==='__custom__'?'selected':''}>+ Input Custom Proxy URL</option>`;
+    oauthSel.innerHTML = opts;
   }
 }
 
