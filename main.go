@@ -1352,12 +1352,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		slogf("[combo %s] approxPrompt: %d tokens (resolved: %v)", comboName, approxPrompt, candidateModels)
 	}
 	if len(candidateModels) == 0 {
-		if strings.Contains(strings.ToLower(o.Model), "argon") {
-			candidateModels = []string{o.Model, "gemini-3.8-flash-medium"}
-			comboName = "argon-safety-fallback"
-		} else {
-			candidateModels = []string{o.Model}
-		}
+		candidateModels = []string{o.Model}
 	}
 
 	// Try every distinct active account (round-robin cursor; failed ones rotate
@@ -1449,8 +1444,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			// UA "antigravity/ide/2.1.1 darwin/arm64" + body {project, model, request{...}}.
 			// Verified 200 against daily-cloudcode-pa on 2026-08-28 (GeminiCLI UA → 403 #3501).
 			req.Header.Set("User-Agent", agUA)
-			req.Header.Set("X-Client-Name", "antigravity")
-			req.Header.Set("X-Client-Version", "2.23.0")
+			if o.Stream {
+				req.Header.Set("Accept", "text/event-stream")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 			client := store.clientFor(acc)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -1621,8 +1619,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						req2.Header.Set("Content-Type", "application/json")
 						req2.Header.Set("Authorization", "Bearer "+tok)
 						req2.Header.Set("User-Agent", agUA)
-						req2.Header.Set("X-Client-Name", "antigravity")
-						req2.Header.Set("X-Client-Version", "2.23.0")
+						if o.Stream {
+							req2.Header.Set("Accept", "text/event-stream")
+						} else {
+							req2.Header.Set("Accept", "application/json")
+						}
 						resp2, err2 := client.Do(req2)
 						if err2 != nil {
 							slogf("[retry %d] %s transport error: %v", bi+1, acc.Email, err2)
