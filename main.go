@@ -347,8 +347,15 @@ var modelSynonym = map[string]string{
 	"imagen-3":                   "gemini-3.1-flash-image",
 	"dall-e-3":                   "gemini-3.1-flash-image",
 	"gemini-image":               "gemini-3.1-flash-image",
-	"argon-4":                    "gemini-4-argon",
-	"argon":                      "gemini-4-argon",
+	"argon-4":                    "gemini-4-argon-medium",
+	"argon":                      "gemini-4-argon-medium",
+	"gemini-4-argon":             "gemini-4-argon-medium",
+	"argon-4-medium":             "gemini-4-argon-medium",
+	"argon-medium":               "gemini-4-argon-medium",
+	"argon-4-high":               "gemini-4-argon-high",
+	"argon-high":                 "gemini-4-argon-high",
+	"argon-4-low":                "gemini-4-argon-low",
+	"argon-low":                  "gemini-4-argon-low",
 }
 
 // tieredRe: gemini-3.6/3.7/3.8 flash levels ride on the bare "-tiered" upstream id,
@@ -368,15 +375,15 @@ func resolveUpstreamModel(m string) (string, *int) {
 	}
 	if m == "gemini-4-argon" || m == "gemini-4-argon-medium" {
 		b := 8192
-		return "gemini-4-argon", &b
+		return "gemini-4-argon-medium", &b
 	}
 	if m == "gemini-4-argon-high" {
 		b := 24576
-		return "gemini-4-argon", &b
+		return "gemini-4-argon-high", &b
 	}
 	if m == "gemini-4-argon-low" {
 		b := 1024
-		return "gemini-4-argon", &b
+		return "gemini-4-argon-low", &b
 	}
 	if m == "gemini-3.8-flash" || m == "gemini-3.7-flash" || m == "gemini-3.6-flash" {
 		b := 24576
@@ -1345,7 +1352,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		slogf("[combo %s] approxPrompt: %d tokens (resolved: %v)", comboName, approxPrompt, candidateModels)
 	}
 	if len(candidateModels) == 0 {
-		candidateModels = []string{o.Model}
+		if strings.Contains(strings.ToLower(o.Model), "argon") {
+			candidateModels = []string{o.Model, "gemini-3.8-flash-medium"}
+			comboName = "argon-safety-fallback"
+		} else {
+			candidateModels = []string{o.Model}
+		}
 	}
 
 	// Try every distinct active account (round-robin cursor; failed ones rotate
@@ -1425,9 +1437,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			agBody := buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
-			url := agHost + "/v1internal:streamGenerateContent?alt=sse"
+			endpointHost := agHost
+			if strings.Contains(upstreamModel, "argon") {
+				endpointHost = "https://cloudcode-pa.googleapis.com"
+			}
+			url := endpointHost + "/v1internal:streamGenerateContent?alt=sse"
 			if !o.Stream {
-				url = agHost + "/v1internal:generateContent"
+				url = endpointHost + "/v1internal:generateContent"
 			}
 			req, _ := http.NewRequest("POST", url, bytes.NewReader(agBody))
 			req.Header.Set("Content-Type", "application/json")
@@ -1494,10 +1510,27 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 
+					// If this account doesn't have the model (e.g. Argon on non-entitled account), try next account in pool!
+					if attempt < maxAttempts-1 {
+						slogf("[404-next-account] %s returned 404 for %s, trying next account in pool", acc.Email, upstreamModel)
+						continue
+					}
+
 					if comboName != "" && mIdx < len(candidateModels)-1 {
-						slogf("[combo %s] model %s returned 404, falling back to next candidate model", comboName, reqModel)
+						slogf("[combo %s] model %s returned 404 on all accounts, falling back to next candidate model", comboName, reqModel)
 						break
 					}
+
+					// For Argon standalone, fallback to Gemini 3.8 Flash instead of dead 404!
+					if strings.Contains(upstreamModel, "argon") {
+						slogf("[argon-fallback] Argon 404 across all accounts, falling back to gemini-3.8-flash-medium")
+						upstreamModel = "gemini-3.8-flash-tiered"
+						b := 8192
+						thinkingBudget = &b
+						agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
+						continue
+					}
+
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprintf(w, `{"error":{"message":"Model %q not found upstream on Antigravity (Requested entity was not found)","type":"invalid_request_error","code":"model_not_found"}}`, reqModel)
