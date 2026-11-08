@@ -1438,9 +1438,6 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			agBody := buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
 			endpointHost := agHost
-			if strings.Contains(upstreamModel, "argon") {
-				endpointHost = "https://cloudcode-pa.googleapis.com"
-			}
 			url := endpointHost + "/v1internal:streamGenerateContent?alt=sse"
 			if !o.Stream {
 				url = endpointHost + "/v1internal:generateContent"
@@ -1523,11 +1520,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 					// For Argon standalone, fallback to Gemini 3.8 Flash instead of dead 404!
 					if strings.Contains(upstreamModel, "argon") {
-						slogf("[argon-fallback] Argon 404 across all accounts, falling back to gemini-3.8-flash-medium")
+						slogf("[argon-fallback] Argon not available upstream on any account, falling back to gemini-3.8-flash-high")
 						upstreamModel = "gemini-3.8-flash-tiered"
-						b := 8192
+						b := 24576
 						thinkingBudget = &b
 						agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
+						attempt = -1
+						attempted = map[string]bool{}
 						continue
 					}
 
@@ -1545,6 +1544,18 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					strings.Contains(lastErrBody, "check quota") ||
 					strings.Contains(lastErrBody, "exceeded your current quota") ||
 					strings.Contains(lastErrBody, "Resets in"))
+
+				// Argon capacity or rolling gate fallback: if Argon hits 429 across accounts, fallback to Gemini 3.8 Flash!
+				if resp.StatusCode == 429 && strings.Contains(upstreamModel, "argon") && attempt == maxAttempts-1 {
+					slogf("[argon-429-fallback] Argon 429 exhausted across all accounts, falling back to gemini-3.8-flash-high")
+					upstreamModel = "gemini-3.8-flash-tiered"
+					b := 24576
+					thinkingBudget = &b
+					agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
+					attempt = -1
+					attempted = map[string]bool{}
+					continue
+				}
 
 				isTosViolation := resp.StatusCode == 403 && (strings.Contains(lastErrBody, "TOS_VIOLATION") ||
 					strings.Contains(lastErrBody, "violation of Terms of") ||
