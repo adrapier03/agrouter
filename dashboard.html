@@ -504,33 +504,65 @@ function toast(msg, bad=false){
 let autoDeleteEnabled = false;
 let autoDeleteMode = 'both';
 let accountRouting = 'round-robin';
+let stickyCallLimit = 0;
 
 function updateRoutingUI() {
   const isSticky = accountRouting === 'sticky';
   const rBtn = $('quota-routing-btn');
   if (rBtn) {
-    rBtn.textContent = isSticky ? '📌 Rotasi: STICKY (1 Akun)' : '🔀 Rotasi: ROUND-ROBIN';
+    const limitLabel = stickyCallLimit > 0 ? `STICKY (${stickyCallLimit} Calls)` : 'STICKY (S/d Habis)';
+    rBtn.textContent = isSticky ? `📌 Rotasi: ${limitLabel}` : '🔀 Rotasi: ROUND-ROBIN';
     rBtn.style.color = isSticky ? '#38bdf8' : 'var(--lime)';
     rBtn.style.background = isSticky ? '#082f49' : '#142918';
     rBtn.style.borderColor = isSticky ? '#0284c7' : '#22543d';
-    rBtn.title = isSticky ? 'Pakai 1 akun sampai kuota habis baru ganti' : 'Rotasi akun bergantian tiap 1 turn';
+    rBtn.title = isSticky ? (stickyCallLimit > 0 ? `Pakai 1 akun per ${stickyCallLimit} calls` : 'Pakai 1 akun sampai kuota habis baru ganti') + ' (Klik ganti mode, Shift+Klik untuk ubah limit)' : 'Rotasi akun bergantian tiap 1 turn';
   }
 }
 
-async function toggleAccountRouting() {
+async function toggleAccountRouting(e) {
+  if (e && (e.shiftKey || (accountRouting === 'sticky' && e.altKey))) {
+    return configureStickyLimit(e);
+  }
   const next = accountRouting === 'sticky' ? 'round-robin' : 'sticky';
   try {
     const r = await api('/admin/settings', {
       method: 'POST',
-      body: JSON.stringify({ accountRouting: next })
+      body: JSON.stringify({ accountRouting: next, stickyCallLimit })
     });
     const j = await r.json();
     accountRouting = j.accountRouting || next;
-    toast(accountRouting === 'sticky' ? '📌 Mode Sticky aktif: 1 akun dipakai terus sampai kuota habis' : '🔀 Mode Round-Robin aktif: rotasi akun bergantian tiap 1 turn');
+    stickyCallLimit = j.stickyCallLimit !== undefined ? j.stickyCallLimit : stickyCallLimit;
+    toast(accountRouting === 'sticky' ? (stickyCallLimit > 0 ? `📌 Mode Sticky aktif: ganti tiap ${stickyCallLimit} calls/akun` : '📌 Mode Sticky aktif: 1 akun dipakai terus sampai kuota habis') : '🔀 Mode Round-Robin aktif: rotasi akun bergantian tiap 1 turn');
     updateRoutingUI();
     load();
   } catch(e) {
     toast('Gagal ubah rotasi: ' + e.message, true);
+  }
+}
+
+async function configureStickyLimit(e) {
+  if (e) e.stopPropagation();
+  const cur = stickyCallLimit || 0;
+  const val = prompt('Tentukan batas pemanggilan per akun untuk mode Sticky:\n\n• Masukkan angka N (contoh: 5, 10, 20): ganti ke akun berikutnya setelah N calls\n• Masukkan 0: pakai 1 akun terus sampai kuota habis', cur);
+  if (val === null) return;
+  const num = parseInt(val, 10);
+  if (isNaN(num) || num < 0) {
+    toast('Nilai harus berupa angka >= 0', true);
+    return;
+  }
+  try {
+    const r = await api('/admin/settings', {
+      method: 'POST',
+      body: JSON.stringify({ accountRouting: 'sticky', stickyCallLimit: num })
+    });
+    const j = await r.json();
+    accountRouting = j.accountRouting || 'sticky';
+    stickyCallLimit = j.stickyCallLimit !== undefined ? j.stickyCallLimit : num;
+    toast(stickyCallLimit > 0 ? `📌 Mode Sticky: ganti tiap ${stickyCallLimit} calls per akun` : '📌 Mode Sticky: pakai 1 akun terus sampai kuota habis');
+    updateRoutingUI();
+    load();
+  } catch(e) {
+    toast('Gagal simpan limit: ' + e.message, true);
   }
 }
 
@@ -616,6 +648,13 @@ async function load(){
       accountRouting = data.accountRouting;
       updateRoutingUI();
     }
+    if (data.accountRouting) {
+      accountRouting = data.accountRouting;
+    }
+    if (data.stickyCallLimit !== undefined) {
+      stickyCallLimit = data.stickyCallLimit;
+    }
+    updateRoutingUI();
     if (data.proxyPools) {
       availableProxies = data.proxyPools;
       updateProxySelects();
@@ -626,8 +665,8 @@ async function load(){
     const routingColor = isSticky ? '#38bdf8' : 'var(--lime)';
     const routingBg = isSticky ? '#082f49' : '#142918';
     const routingBorder = isSticky ? '#0284c7' : '#22543d';
-    const routingShort = isSticky ? 'STICKY' : 'ROUND-ROBIN';
-    const routingDesc = isSticky ? '1 akun s/d habis' : 'tiap 1 turn';
+    const routingShort = isSticky ? (stickyCallLimit > 0 ? `STICKY (${stickyCallLimit})` : 'STICKY') : 'ROUND-ROBIN';
+    const routingDesc = isSticky ? (stickyCallLimit > 0 ? `${stickyCallLimit} call/akun` : '1 akun s/d habis') : 'tiap 1 turn';
 
     const autoDelColor = autoDeleteEnabled ? 'var(--lime)' : 'var(--dim)';
     const autoDelBg = autoDeleteEnabled ? '#1d2b13' : 'var(--panel)';
@@ -637,9 +676,12 @@ async function load(){
       <div class="stat ok"><div class="v">${active}/${total}</div><div class="k">aktif</div></div>
       <div class="stat"><div class="v">${reqs}</div><div class="k">requests</div></div>
       <div class="stat ${errs>0?'err':''}"><div class="v">${errs}</div><div class="k">errors</div></div>
-      <div class="stat" onclick="toggleAccountRouting()" style="cursor:pointer;border-color:${routingBorder};background:${routingBg};user-select:none" title="Klik untuk mengganti strategi rotasi akun: Round-Robin (ganti tiap turn) vs Sticky (pakai 1 akun sampai habis)">
-        <div class="v" style="color:${routingColor};font-size:15px">${routingShort}</div>
-        <div class="k">rotasi (${routingDesc})</div>
+      <div class="stat" style="border-color:${routingBorder};background:${routingBg};user-select:none" title="Klik untuk mengganti strategi rotasi akun (Round-Robin vs Sticky). Klik 'set limit' untuk batas pemakaian per akun.">
+        <div onclick="toggleAccountRouting(event)" style="cursor:pointer">
+          <div class="v" style="color:${routingColor};font-size:15px">${routingShort}</div>
+          <div class="k">rotasi (${routingDesc})</div>
+        </div>
+        ${isSticky ? `<div onclick="configureStickyLimit(event)" style="cursor:pointer;font-size:10px;color:#38bdf8;text-decoration:underline;margin-top:2px">⚙️ set limit</div>` : ''}
       </div>
       <div class="stat" onclick="toggleAutoDelete()" style="cursor:pointer;border-color:${autoDelBorder};background:${autoDelBg};user-select:none" title="Klik untuk mengaktifkan / menonaktifkan Auto-Hapus akun (${modeTag})">
         <div class="v" style="color:${autoDelColor}">${autoDeleteEnabled ? 'ON' : 'OFF'}</div>

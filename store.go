@@ -139,9 +139,11 @@ type Store struct {
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"` // "both" | "gemini" | "claude"
 	AccountRouting     string        `json:"accountRouting,omitempty"` // "round-robin" | "sticky"
+	StickyCallLimit    int           `json:"stickyCallLimit,omitempty"` // 0 = unlimited / s/d habis, >0 = ganti tiap N calls
 	Combos             []*ComboModel `json:"combos,omitempty"`
 	ProxyPools         []*ProxyPool  `json:"proxyPools,omitempty"`
 	rr                 int           // round-robin cursor
+	stickyCalls        int           // calls served by current sticky account
 }
 
 func loadStore(path string) (*Store, error) {
@@ -187,6 +189,7 @@ type storeSnapshot struct {
 	AutoDeleteDepleted bool          `json:"autoDeleteDepleted"`
 	AutoDeleteMode     string        `json:"autoDeleteMode,omitempty"`
 	AccountRouting     string        `json:"accountRouting,omitempty"`
+	StickyCallLimit    int           `json:"stickyCallLimit,omitempty"`
 	Combos             []*ComboModel `json:"combos,omitempty"`
 	ProxyPools         []*ProxyPool  `json:"proxyPools,omitempty"`
 }
@@ -224,6 +227,7 @@ func (s *Store) save() error {
 		AutoDeleteDepleted: s.AutoDeleteDepleted,
 		AutoDeleteMode:     s.AutoDeleteMode,
 		AccountRouting:     s.AccountRouting,
+		StickyCallLimit:    s.StickyCallLimit,
 		Combos:             combos,
 		ProxyPools:         pools,
 	}
@@ -261,8 +265,10 @@ func newID() string {
 
 // pickAccount returns an active account based on the configured AccountRouting strategy.
 // In "round-robin" mode: advances cursor to next active account on every call.
-// In "sticky" mode (attempt==0): reuses current account at cursor if active;
-// on retry (attempt > 0) or if current account is inactive, advances to next active account.
+// In "sticky" mode:
+//   - If attempt == 0: reuses current account at cursor if active and within StickyCallLimit (if > 0).
+//   - If StickyCallLimit > 0 and stickyCalls >= StickyCallLimit: advances to next active account, resets stickyCalls.
+//   - On retry (attempt > 0) or if current account is inactive: advances to next active account, resets stickyCalls.
 func (s *Store) pickAccount(attempt int) *Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -276,7 +282,7 @@ func (s *Store) pickAccount(attempt int) *Account {
 		strategy = "round-robin"
 	}
 
-	// In sticky mode on first attempt: reuse current account if active
+	// In sticky mode on first attempt: reuse current account if active and within limit
 	if strategy == "sticky" && attempt == 0 {
 		idx := s.rr % n
 		if idx < 0 {
@@ -284,15 +290,22 @@ func (s *Store) pickAccount(attempt int) *Account {
 		}
 		a := s.Accounts[idx]
 		if a.Active {
-			return a
+			if s.StickyCallLimit <= 0 || s.stickyCalls < s.StickyCallLimit {
+				return a
+			}
+			// Limit reached: advance to next account
+			s.stickyCalls = 0
+		} else {
+			s.stickyCalls = 0
 		}
 	}
 
-	// Round-robin mode OR retry (attempt > 0) OR sticky current account is inactive:
+	// Round-robin mode OR retry (attempt > 0) OR sticky limit reached / inactive:
 	for i := 0; i < n; i++ {
 		s.rr = (s.rr + 1) % n
 		a := s.Accounts[s.rr]
 		if a.Active {
+			s.stickyCalls = 0
 			return a
 		}
 	}
@@ -320,6 +333,9 @@ func (s *Store) markUsed(a *Account) {
 	defer s.mu.Unlock()
 	a.LastUsedAt = time.Now().UTC().Format(time.RFC3339)
 	a.ReqCount++
+	if s.AccountRouting == "sticky" {
+		s.stickyCalls++
+	}
 	s.save()
 }
 
@@ -328,25 +344,32 @@ func (s *Store) markError(a *Account, msg string) {
 	defer s.mu.Unlock()
 	a.LastErr = msg
 	a.ErrCount++
+	if s.AccountRouting == "sticky" {
+		s.stickyCalls = 0
+	}
 	s.save()
 }
 
-func (s *Store) getAccountRouting() string {
+func (s *Store) getAccountRouting() (string, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.AccountRouting == "" {
-		return "round-robin"
-	}
-	return s.AccountRouting
-}
-
-func (s *Store) setAccountRouting(strategy string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if strategy != "sticky" {
+	strategy := s.AccountRouting
+	if strategy == "" {
 		strategy = "round-robin"
 	}
-	s.AccountRouting = strategy
+	return strategy, s.StickyCallLimit
+}
+
+func (s *Store) setAccountRouting(strategy string, limit int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strategy != "" {
+		s.AccountRouting = strategy
+	}
+	if limit >= 0 {
+		s.StickyCallLimit = limit
+	}
+	s.stickyCalls = 0
 	s.save()
 }
 
