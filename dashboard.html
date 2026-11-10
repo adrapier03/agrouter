@@ -182,6 +182,7 @@ button.test:disabled{opacity:.5; cursor:wait}
       <div style="display:flex;gap:10px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px;flex-wrap:wrap">
         <button id="tab-btn-oauth" onclick="switchAddTab('oauth')" style="background:var(--panel2);color:var(--lime);font-weight:700">🔑 Sign In Google OAuth</button>
         <button id="tab-btn-gsuite" onclick="switchAddTab('gsuite')" style="background:transparent;color:var(--dim)">⚡ Auto Onboard GSuite (Headless)</button>
+        <button id="tab-btn-9router" onclick="switchAddTab('9router')" style="background:transparent;color:var(--dim)">📥 Import dari 9router</button>
         <button id="tab-btn-manual" onclick="switchAddTab('manual')" style="background:transparent;color:var(--dim)">Manual (RefreshToken / JSON)</button>
       </div>
 
@@ -241,6 +242,37 @@ button.test:disabled{opacity:.5; cursor:wait}
           <span class="mut">atau</span>
           <input id="gsuite-file" type="file" accept=".txt" onchange="loadGSuiteFile(this)">
           <span id="gsuite-status" style="font-size:12px;margin-left:auto;color:var(--dim)"></span>
+        </div>
+      </div>
+
+      <!-- Tab 9router: Import from 9router DB -->
+      <div id="add-tab-9router" style="display:none">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:12px;line-height:1.5">
+          Deteksi otomatis akun Antigravity dari database 9router lokal (<b style="color:var(--tx)">~/.9router/db/data.sqlite</b>) lengkap dengan refresh token, project ID, dan proxy pool bawaan.
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+          <button onclick="load9RouterAccounts()" style="background:var(--panel2);font-weight:700;padding:6px 12px">🔄 Refresh Akun 9router</button>
+          <button onclick="importSelected9Router()" style="background:#1d2b13;color:var(--lime);border:1px solid #3a5518;font-weight:700;padding:6px 14px">📥 Import Terpilih</button>
+          <button onclick="importAllNew9Router()" style="background:#13242b;color:#4cd0f0;border:1px solid #184b55;font-weight:700;padding:6px 14px">⚡ Import Semua Akun Baru</button>
+          <span id="nine-status" style="font-size:12px;color:var(--dim);margin-left:auto"></span>
+        </div>
+        <div style="max-height:280px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;background:var(--bg)">
+          <table style="margin:0;font-size:12px">
+            <thead>
+              <tr>
+                <th style="width:36px;text-align:center"><input type="checkbox" id="nine-check-all" onchange="toggleSelectAll9Router(this)"></th>
+                <th>Akun / Email</th>
+                <th>Project ID</th>
+                <th>Proxy 9router</th>
+                <th>Status 9router</th>
+                <th>Status di agrouter</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="nine-rows">
+              <tr><td colspan="7" style="text-align:center;color:var(--dim);padding:14px">Memuat daftar akun dari 9router...</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -787,7 +819,7 @@ async function batchAction(action) {
 let currentOAuthRedirectUri = 'http://localhost:14451/callback';
 
 function switchAddTab(tab) {
-  const tabs = ['oauth', 'gsuite', 'manual'];
+  const tabs = ['oauth', 'gsuite', '9router', 'manual'];
   tabs.forEach(t => {
     const el = $('add-tab-' + t);
     const btn = $('tab-btn-' + t);
@@ -798,6 +830,9 @@ function switchAddTab(tab) {
       btn.style.fontWeight = (t === tab) ? '700' : 'normal';
     }
   });
+  if (tab === '9router') {
+    load9RouterAccounts();
+  }
 }
 
 function onOAuthProxySelect(val) {
@@ -1828,6 +1863,139 @@ async function importFile(){
     } catch(e){/* skip line */}
   }
   toast(`import ${n} akun`); load();
+}
+
+// ---------- 9router import ----------
+let cached9RouterAccounts = [];
+
+async function load9RouterAccounts() {
+  const statusEl = $('nine-status');
+  const tbody = $('nine-rows');
+  if (statusEl) statusEl.textContent = 'Memuat dari 9router...';
+  try {
+    const res = await api('/admin/9router/accounts');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (statusEl) statusEl.textContent = 'Gagal: ' + (err.error || res.statusText);
+      return;
+    }
+    const data = await res.json();
+    cached9RouterAccounts = data.accounts || [];
+    render9RouterTable();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Error: ' + err.message;
+  }
+}
+
+function render9RouterTable() {
+  const tbody = $('nine-rows');
+  const statusEl = $('nine-status');
+  if (!tbody) return;
+  if (!cached9RouterAccounts.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:14px">Tidak ada akun Antigravity ditemukan di 9router.</td></tr>';
+    if (statusEl) statusEl.textContent = '0 akun ditemukan';
+    return;
+  }
+  const unimportedCount = cached9RouterAccounts.filter(a => !a.alreadyImported).length;
+  if (statusEl) {
+    statusEl.innerHTML = `<span style="color:var(--lime);font-weight:700">${cached9RouterAccounts.length}</span> akun 9router (<b style="color:#4cd0f0">${unimportedCount} baru</b>, ${cached9RouterAccounts.length - unimportedCount} sudah ada)`;
+  }
+
+  tbody.innerHTML = cached9RouterAccounts.map(a => {
+    const isNew = !a.alreadyImported;
+    const badgeAg = isNew 
+      ? '<span style="background:#242b16;color:#a3e635;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700">BELUM ADA</span>'
+      : '<span style="background:#1a2332;color:#38bdf8;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700">SUDAH ADA</span>';
+    
+    let stColor = 'var(--dim)';
+    if (a.status === 'active') stColor = 'var(--lime)';
+    else if (a.status === 'error') stColor = 'var(--amber)';
+    const statusBadge = `<span style="color:${stColor}">${esc(a.status || 'unknown')}</span>`;
+
+    const proxyText = a.proxyUrl ? esc(a.proxyUrl) : '<span style="color:var(--dim)">Direct</span>';
+    const checked = isNew ? 'checked' : '';
+
+    return `<tr>
+      <td style="text-align:center"><input type="checkbox" class="nine-cb" data-id="${esc(a.id)}" data-email="${esc(a.email)}" ${checked}></td>
+      <td><b>${esc(a.email)}</b></td>
+      <td style="color:var(--dim)">${esc(a.projectId || '-')}</td>
+      <td style="font-size:11px">${proxyText}</td>
+      <td>${statusBadge}</td>
+      <td>${badgeAg}</td>
+      <td>
+        <button onclick="importSingle9Router('${esc(a.email)}', '${esc(a.id)}')" style="padding:2px 8px;font-size:11px;background:var(--panel2)">Import</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function toggleSelectAll9Router(master) {
+  document.querySelectorAll('.nine-cb').forEach(cb => cb.checked = master.checked);
+}
+
+async function importSelected9Router() {
+  const cbs = Array.from(document.querySelectorAll('.nine-cb:checked'));
+  if (!cbs.length) return toast('Pilih minimal 1 akun untuk diimport', true);
+  const emails = cbs.map(cb => cb.getAttribute('data-email')).filter(Boolean);
+  const ids = cbs.map(cb => cb.getAttribute('data-id')).filter(Boolean);
+  
+  toast(`Mengimport ${emails.length} akun...`);
+  try {
+    const res = await api('/admin/9router/import', {
+      method: 'POST',
+      body: JSON.stringify({ emails, ids })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast(`Berhasil import ${data.imported} akun dari 9router!`);
+      load();
+      load9RouterAccounts();
+    } else {
+      toast('Gagal import: ' + (data.error || 'unknown error'), true);
+    }
+  } catch (err) {
+    toast('Error import: ' + err.message, true);
+  }
+}
+
+async function importAllNew9Router() {
+  toast('Mengimport semua akun baru dari 9router...');
+  try {
+    const res = await api('/admin/9router/import', {
+      method: 'POST',
+      body: JSON.stringify({ allNew: true })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast(`Berhasil import ${data.imported} akun baru dari 9router!`);
+      load();
+      load9RouterAccounts();
+    } else {
+      toast('Gagal import: ' + (data.error || 'unknown error'), true);
+    }
+  } catch (err) {
+    toast('Error: ' + err.message, true);
+  }
+}
+
+async function importSingle9Router(email, id) {
+  toast(`Mengimport ${email}...`);
+  try {
+    const res = await api('/admin/9router/import', {
+      method: 'POST',
+      body: JSON.stringify({ emails: [email], ids: [id] })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast(`Akun ${email} berhasil diimport!`);
+      load();
+      load9RouterAccounts();
+    } else {
+      toast('Gagal: ' + (data.error || 'unknown error'), true);
+    }
+  } catch (err) {
+    toast('Error: ' + err.message, true);
+  }
 }
 
 if (TOK) { fetch('/admin/accounts', {headers:{'Authorization':'Bearer '+TOK}}).then(r => {

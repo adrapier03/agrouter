@@ -3518,6 +3518,332 @@ func handleGSuiteStop(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "message": "proses dibatalkan"})
 }
 
+// -------------------------------------------------------------------------
+// 9router Account Import
+// -------------------------------------------------------------------------
+
+type NineRouterAccountInfo struct {
+	ID              string `json:"id"`
+	Email           string `json:"email"`
+	ProjectID       string `json:"projectId"`
+	ProxyURL        string `json:"proxyUrl"`
+	Status          string `json:"status"`
+	TestStatus      string `json:"testStatus"`
+	HasRefreshToken bool   `json:"hasRefreshToken"`
+	AlreadyImported bool   `json:"alreadyImported"`
+}
+
+func get9RouterDBPath() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = "/root"
+	}
+	return filepath.Join(home, ".9router", "db", "data.sqlite")
+}
+
+func handle9RouterAccounts(w http.ResponseWriter, r *http.Request) {
+	dbPath := get9RouterDBPath()
+	if _, err := os.Stat(dbPath); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Database 9router tidak ditemukan di " + dbPath})
+		return
+	}
+
+	// 1. Get proxy pools
+	cmdPools := exec.Command("sqlite3", "-json", dbPath, "SELECT id, json_extract(data, '$.proxyUrl') as proxyUrl FROM proxyPools;")
+	outPools, _ := cmdPools.Output()
+	var rawPools []struct {
+		ID       string `json:"id"`
+		ProxyURL string `json:"proxyUrl"`
+	}
+	pools := make(map[string]string)
+	if err := json.Unmarshal(outPools, &rawPools); err == nil {
+		for _, p := range rawPools {
+			if p.ID != "" && p.ProxyURL != "" {
+				pools[p.ID] = strings.TrimRight(p.ProxyURL, "/")
+			}
+		}
+	}
+
+	// 2. Get accounts
+	query := `SELECT 
+		id, 
+		json_extract(data, '$.email') as email, 
+		json_extract(data, '$.accountEmail') as accountEmail, 
+		json_extract(data, '$.projectId') as projectId, 
+		json_extract(data, '$.status') as status, 
+		json_extract(data, '$.testStatus') as testStatus, 
+		coalesce(json_extract(data, '$.proxyPoolId'), json_extract(data, '$.providerSpecificData.proxyPoolId')) as proxyPoolId,
+		CASE WHEN json_extract(data, '$.refreshToken') IS NOT NULL AND length(json_extract(data, '$.refreshToken')) > 0 THEN 1 ELSE 0 END as hasRefreshToken
+	FROM providerConnections 
+	WHERE provider='antigravity';`
+
+	cmdAccs := exec.Command("sqlite3", "-json", dbPath, query)
+	outAccs, err := cmdAccs.Output()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Gagal membaca database 9router: " + err.Error()})
+		return
+	}
+
+	var rawAccs []struct {
+		ID              string  `json:"id"`
+		Email           *string `json:"email"`
+		AccountEmail    *string `json:"accountEmail"`
+		ProjectID       *string `json:"projectId"`
+		Status          *string `json:"status"`
+		TestStatus      *string `json:"testStatus"`
+		ProxyPoolID     *string `json:"proxyPoolId"`
+		HasRefreshToken int     `json:"hasRefreshToken"`
+	}
+	if err := json.Unmarshal(outAccs, &rawAccs); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Gagal parsing JSON dari 9router: " + err.Error()})
+		return
+	}
+
+	store.mu.Lock()
+	importedMap := make(map[string]bool)
+	for _, a := range store.Accounts {
+		if a.Email != "" {
+			importedMap[strings.ToLower(a.Email)] = true
+		}
+	}
+	store.mu.Unlock()
+
+	var list []NineRouterAccountInfo
+	for _, a := range rawAccs {
+		email := ""
+		if a.Email != nil && *a.Email != "" {
+			email = *a.Email
+		} else if a.AccountEmail != nil && *a.AccountEmail != "" {
+			email = *a.AccountEmail
+		}
+		proj := ""
+		if a.ProjectID != nil {
+			proj = *a.ProjectID
+		}
+		if email == "" {
+			if proj != "" {
+				email = proj + "@antigravity"
+			} else {
+				email = a.ID + "@antigravity"
+			}
+		}
+
+		status := "unknown"
+		if a.Status != nil && *a.Status != "" {
+			status = *a.Status
+		}
+		testStatus := ""
+		if a.TestStatus != nil {
+			testStatus = *a.TestStatus
+		}
+
+		proxyURL := ""
+		if a.ProxyPoolID != nil && *a.ProxyPoolID != "" {
+			proxyURL = pools[*a.ProxyPoolID]
+		}
+
+		list = append(list, NineRouterAccountInfo{
+			ID:              a.ID,
+			Email:           email,
+			ProjectID:       proj,
+			ProxyURL:        proxyURL,
+			Status:          status,
+			TestStatus:      testStatus,
+			HasRefreshToken: a.HasRefreshToken == 1,
+			AlreadyImported: importedMap[strings.ToLower(email)],
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"accounts": list,
+		"count":    len(list),
+		"dbPath":   dbPath,
+	})
+}
+
+func handle9RouterImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		IDs    []string `json:"ids"`
+		Emails []string `json:"emails"`
+		AllNew bool     `json:"allNew"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+		return
+	}
+
+	dbPath := get9RouterDBPath()
+	if _, err := os.Stat(dbPath); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Database 9router tidak ditemukan di " + dbPath})
+		return
+	}
+
+	// 1. Get proxy pools
+	cmdPools := exec.Command("sqlite3", "-json", dbPath, "SELECT id, json_extract(data, '$.proxyUrl') as proxyUrl FROM proxyPools;")
+	outPools, _ := cmdPools.Output()
+	var rawPools []struct {
+		ID       string `json:"id"`
+		ProxyURL string `json:"proxyUrl"`
+	}
+	pools := make(map[string]string)
+	if err := json.Unmarshal(outPools, &rawPools); err == nil {
+		for _, p := range rawPools {
+			if p.ID != "" && p.ProxyURL != "" {
+				pools[p.ID] = strings.TrimRight(p.ProxyURL, "/")
+			}
+		}
+	}
+
+	// 2. Query accounts with refreshToken
+	query := `SELECT 
+		id, 
+		json_extract(data, '$.email') as email, 
+		json_extract(data, '$.accountEmail') as accountEmail, 
+		json_extract(data, '$.projectId') as projectId, 
+		coalesce(json_extract(data, '$.proxyPoolId'), json_extract(data, '$.providerSpecificData.proxyPoolId')) as proxyPoolId,
+		json_extract(data, '$.refreshToken') as refreshToken
+	FROM providerConnections 
+	WHERE provider='antigravity' AND json_extract(data, '$.refreshToken') IS NOT NULL AND length(json_extract(data, '$.refreshToken')) > 0;`
+
+	cmdAccs := exec.Command("sqlite3", "-json", dbPath, query)
+	outAccs, err := cmdAccs.Output()
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Gagal membaca database 9router: " + err.Error()})
+		return
+	}
+
+	var rawAccs []struct {
+		ID           string  `json:"id"`
+		Email        *string `json:"email"`
+		AccountEmail *string `json:"accountEmail"`
+		ProjectID    *string `json:"projectId"`
+		ProxyPoolID  *string `json:"proxyPoolId"`
+		RefreshToken *string `json:"refreshToken"`
+	}
+	if err := json.Unmarshal(outAccs, &rawAccs); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Gagal parsing JSON: " + err.Error()})
+		return
+	}
+
+	wantedIDs := make(map[string]bool)
+	for _, id := range in.IDs {
+		wantedIDs[id] = true
+	}
+	wantedEmails := make(map[string]bool)
+	for _, e := range in.Emails {
+		wantedEmails[strings.ToLower(strings.TrimSpace(e))] = true
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	importedMap := make(map[string]*Account)
+	for _, a := range store.Accounts {
+		if a.Email != "" {
+			importedMap[strings.ToLower(a.Email)] = a
+		}
+	}
+
+	var importedEmails []string
+
+	for _, a := range rawAccs {
+		if a.RefreshToken == nil || *a.RefreshToken == "" {
+			continue
+		}
+		email := ""
+		if a.Email != nil && *a.Email != "" {
+			email = *a.Email
+		} else if a.AccountEmail != nil && *a.AccountEmail != "" {
+			email = *a.AccountEmail
+		}
+		proj := ""
+		if a.ProjectID != nil {
+			proj = *a.ProjectID
+		}
+		if email == "" {
+			if proj != "" {
+				email = proj + "@antigravity"
+			} else {
+				email = a.ID + "@antigravity"
+			}
+		}
+		lowEmail := strings.ToLower(email)
+
+		isWanted := false
+		if in.AllNew {
+			if _, exists := importedMap[lowEmail]; !exists {
+				isWanted = true
+			}
+		} else {
+			if wantedIDs[a.ID] || wantedEmails[lowEmail] {
+				isWanted = true
+			}
+		}
+
+		if !isWanted {
+			continue
+		}
+
+		proxyURL := ""
+		if a.ProxyPoolID != nil && *a.ProxyPoolID != "" {
+			proxyURL = pools[*a.ProxyPoolID]
+		}
+
+		acc, exists := importedMap[lowEmail]
+		if !exists {
+			acc = &Account{
+				ID:     newID(),
+				Email:  email,
+				Active: true,
+			}
+			store.Accounts = append(store.Accounts, acc)
+			importedMap[lowEmail] = acc
+		}
+
+		acc.RefreshTok = *a.RefreshToken
+		if proj != "" {
+			acc.ProjectID = proj
+		}
+		if proxyURL != "" {
+			acc.ProxyURL = proxyURL
+		}
+		acc.Active = true
+		acc.LastErr = ""
+		acc.AccessTok = ""
+		acc.ExpiresAt = ""
+
+		importedEmails = append(importedEmails, email)
+	}
+
+	if len(importedEmails) > 0 {
+		store.save()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":       true,
+		"imported": len(importedEmails),
+		"emails":   importedEmails,
+	})
+}
+
 func handleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 	startReq := time.Now()
 	keyName := "default"
@@ -3836,6 +4162,8 @@ func main() {
 	mux.HandleFunc("/admin/gsuite/onboard", adminAuth(handleGSuiteOnboard))
 	mux.HandleFunc("/admin/gsuite/status", adminAuth(handleGSuiteStatus))
 	mux.HandleFunc("/admin/gsuite/stop", adminAuth(handleGSuiteStop))
+	mux.HandleFunc("/admin/9router/accounts", adminAuth(handle9RouterAccounts))
+	mux.HandleFunc("/admin/9router/import", adminAuth(handle9RouterImport))
 
 	recoveryMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
