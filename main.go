@@ -1654,20 +1654,23 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 
-					// If this account doesn't have the model (e.g. Argon on non-entitled account), try next account in pool!
-					if attempt < maxAttempts-1 {
-						slogf("[404-next-account] %s returned 404 for %s, trying next account in pool", acc.Email, upstreamModel)
+					// If this account doesn't have the model (e.g. Argon on non-entitled account),
+					// cap retries to max 3 accounts so we don't spin through 60+ accounts taking 20+ seconds!
+					max404Retries := 3
+					if attempt < max404Retries-1 && attempt < maxAttempts-1 {
+						slogf("[404-next-account] %s returned 404 for %s, trying next account (%d/%d)", acc.Email, upstreamModel, attempt+1, max404Retries)
 						continue
 					}
 
 					if comboName != "" && mIdx < len(candidateModels)-1 {
-						slogf("[combo %s] model %s returned 404 on all accounts, falling back to next candidate model", comboName, reqModel)
+						slogf("[combo %s] model %s returned 404 (tested %d accounts), falling back to next candidate model", comboName, reqModel, attempt+1)
 						break
 					}
 
 					// For Argon standalone, fallback to Gemini 3.8 Flash instead of dead 404!
 					if strings.Contains(upstreamModel, "argon") {
-						slogf("[argon-fallback] Argon not available upstream on any account, falling back to gemini-3.8-flash-high")
+						slogf("[argon-fallback] Argon 404 across %d accounts (Google marked disabled), fast fallback to gemini-3.8-flash-high", attempt+1)
+						reqModel = "gemini-3.8-flash-high (fallback from argon)"
 						upstreamModel = "gemini-3.8-flash-tiered"
 						b := 24576
 						thinkingBudget = &b
@@ -1693,8 +1696,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					strings.Contains(lastErrBody, "Resets in"))
 
 				// Argon capacity or rolling gate fallback: if Argon hits 429 across accounts, fallback to Gemini 3.8 Flash!
-				if resp.StatusCode == 429 && strings.Contains(upstreamModel, "argon") && attempt == maxAttempts-1 {
-					slogf("[argon-429-fallback] Argon 429 exhausted across all accounts, falling back to gemini-3.8-flash-high")
+				if resp.StatusCode == 429 && strings.Contains(upstreamModel, "argon") && (attempt >= 2 || attempt == maxAttempts-1) {
+					slogf("[argon-429-fallback] Argon 429 exhausted across %d accounts, fast fallback to gemini-3.8-flash-high", attempt+1)
+					reqModel = "gemini-3.8-flash-high (fallback from argon)"
 					upstreamModel = "gemini-3.8-flash-tiered"
 					b := 24576
 					thinkingBudget = &b
