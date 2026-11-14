@@ -704,11 +704,40 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 	noLatexRule := `
 
 CRITICAL FORMATTING INSTRUCTION: Do NOT use LaTeX math syntax (such as \xrightarrow, \rightarrow, 	ext{...}, 	imes, $, or $$) for arrows, transitions, diagrams, formulas, or formatting. The client interface is Discord which does not support LaTeX rendering. Always use plain Unicode characters and standard Markdown (e.g. ──(label)──>, ➔, →, ×, ≤, ≥, etc.) so that your output renders cleanly without raw LaTeX markup.`
-	if sys.Len() > 0 {
-		sys.WriteString(noLatexRule)
+
+	sysText := sys.String()
+	modelLower := strings.ToLower(upstreamModel)
+	isGemini := strings.Contains(modelLower, "gemini") || strings.Contains(modelLower, "gemma") || strings.Contains(modelLower, "argon")
+	// If Gemini/Gemma model has a large system prompt (>800 chars) or any model exceeds 4000 chars,
+	// fold the system prompt into the first user turn. This prevents Google Antigravity CloudCode PA API
+	// from returning 429 RESOURCE_EXHAUSTED when systemInstruction is large.
+	shouldFoldSystem := (isGemini && len(sysText) > 800) || len(sysText) > 4000
+
+	if shouldFoldSystem {
+		slogf("[prompt-adapter] folded %d chars system prompt into first user turn (model=%s)", len(sysText), upstreamModel)
+		prefix := fmt.Sprintf("Follow the runtime instructions included in this user message.\n\n[Runtime system instructions]\n%s\n[End runtime system instructions]\n\n", sysText)
+
+		if len(ag.Request.Contents) > 0 && ag.Request.Contents[0].Role == "user" {
+			if len(ag.Request.Contents[0].Parts) > 0 && ag.Request.Contents[0].Parts[0].Text != "" {
+				ag.Request.Contents[0].Parts[0].Text = prefix + ag.Request.Contents[0].Parts[0].Text
+			} else {
+				ag.Request.Contents[0].Parts = append([]agPart{{Text: prefix}}, ag.Request.Contents[0].Parts...)
+			}
+		} else {
+			ag.Request.Contents = append([]agContent{{
+				Role:  "user",
+				Parts: []agPart{{Text: prefix}},
+			}}, ag.Request.Contents...)
+		}
+
+		systemMarker := "You are an AI assistant. Follow the runtime instructions in the first user message.\n\n" + strings.TrimSpace(noLatexRule)
 		ag.Request.SystemInstruction = &struct {
 			Parts []agPart `json:"parts"`
-		}{Parts: []agPart{{Text: sys.String()}}}
+		}{Parts: []agPart{{Text: systemMarker}}}
+	} else if len(sysText) > 0 {
+		ag.Request.SystemInstruction = &struct {
+			Parts []agPart `json:"parts"`
+		}{Parts: []agPart{{Text: sysText + noLatexRule}}}
 	} else {
 		ag.Request.SystemInstruction = &struct {
 			Parts []agPart `json:"parts"`
@@ -1668,6 +1697,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					// For Argon standalone, fallback to Gemini 3.8 Flash instead of dead 404!
 					if strings.Contains(upstreamModel, "argon") {
 						slogf("[argon-fallback] Argon not available upstream on any account, falling back to gemini-3.8-flash-high")
+						reqModel = "gemini-3.8-flash-high (fallback from argon)"
 						upstreamModel = "gemini-3.8-flash-tiered"
 						b := 24576
 						thinkingBudget = &b
@@ -1695,6 +1725,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				// Argon capacity or rolling gate fallback: if Argon hits 429 across accounts, fallback to Gemini 3.8 Flash!
 				if resp.StatusCode == 429 && strings.Contains(upstreamModel, "argon") && attempt == maxAttempts-1 {
 					slogf("[argon-429-fallback] Argon 429 exhausted across all accounts, falling back to gemini-3.8-flash-high")
+					reqModel = "gemini-3.8-flash-high (fallback from argon)"
 					upstreamModel = "gemini-3.8-flash-tiered"
 					b := 24576
 					thinkingBudget = &b
