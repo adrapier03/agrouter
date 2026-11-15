@@ -17,6 +17,12 @@ Didesain khusus untuk menggantikan solusi berbasis web framework berat (seperti 
   - **Thought Signature Sentinel Whitelist:** Menyuntikkan sentinel signature pada percakapan multi-turn yang memanggil tool agar tidak ditolak oleh Google API (`400 INVALID_ARGUMENT: missing thought_signature`).
   - **Schema Sanitizer:** Membersihkan format schema enum integer/number (seperti pada tool Discord/MCP) ke format string agar kompatibel dengan protobuf deserializer Google.
   - **Auto Tool Name Resolution:** Memetakan `tool_call_id` secara otomatis ke nama tool asli pada saat replay riwayat percakapan.
+- **Native Prompt Auto-Fold Adapter (Mitigasi 429 RESOURCE_EXHAUSTED Siluman):**
+  - Mengatasi bug/limitasi kritis pada backend Google CloudCode PA API di mana pengiriman system prompt yang panjang (khas agent seperti Hermes, Cline, atau OpenCode yang membawa rules, memory host, dan katalog tools tebal) memicu penolakan palsu `HTTP 429 RESOURCE_EXHAUSTED` meskipun kuota akun masih penuh.
+  - Secara otomatis mendeteksi model Gemini/Gemma dengan system prompt > 800 karakter (atau > 4000 karakter pada model lain), memindahkan teks instruksi tebal tersebut ke awal pesan user pertama (*first user turn*) secara transparan, dan menyisakan marker minimal pada `systemInstruction`.
+  - Agen AI di sisi client (Hermes di berbagai VPS/PC) dapat langsung menggunakan model Gemini tanpa perlu memodifikasi atau me-patch kode client.
+- **Failover & Rotasi Penuh Pool Akun (Zero-Cap Retry):**
+  - Saat suatu akun terkena limit kuota riil (429) atau error 404/503, `agrouter` tidak membatasi percobaan ke segelintir akun, melainkan otomatis mencoba berputar ke **seluruh akun aktif di pool** secara berurutan tanpa memutus sesi pengguna.
 - **Katalog Model Lengkap:**
   - `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`
   - `gemini-3.7-flash-high`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low`
@@ -179,6 +185,29 @@ server {
     }
 }
 ```
+
+---
+
+## Mitigasi Khusus 429 & Prompt Auto-Fold (Issue #76783)
+
+### Masalah: Error 429 Palsu pada Gemini
+Pada ekosistem Google Antigravity / CloudCode PA API, server backend memiliki perilaku unik pada laci pesan sistem (`systemInstruction`):
+- Aplikasi resmi **Antigravity IDE** hanya mengirimkan instruksi sistem pendek (1-2 baris).
+- **AI Agent otonom (seperti Hermes, Cline, Claude Code)** menyertakan system prompt berukuran masif (puluhan ribu karakter berisi persona, aturan runtime, daftar puluhan function tools, dan memori host).
+- Jika teks masif tersebut dimasukkan langsung ke field `systemInstruction` Google, backend Google sering kali menolaknya dan mengembalikan status **`HTTP 429 RESOURCE_EXHAUSTED`**, memicu ilusi seolah-olah kuota akun habis padahal kuota akun masih penuh.
+
+### Solusi `agrouter`: Native Prompt Auto-Fold
+`agrouter` mengimplementasikan adapter otomatis di level gateway:
+1. **Pendeteksian Cerdas:** Setiap request model Gemini/Gemma dengan system prompt > 800 karakter (atau model non-Gemini > 4000 karakter) akan otomatis dideteksi.
+2. **Auto-Folding:** Full system prompt tebal dipindahkan secara transparan ke awal pesan pengguna pertama (*first user turn*) dengan blok penanda instruksi yang terisolasi.
+3. **Marker Ringkas:** Field `systemInstruction` ke upstream Google disederhanakan menjadi penanda pengarah ringkas:
+   ```text
+   You are an AI assistant. Follow the runtime instructions in the first user message.
+   ```
+4. **Zero-Patch pada Client:** Agen AI di sisi client (laptop, VPS, Poco, atau server lain) dapat menggunakan kode upstream asli tanpa perlu melakukan modifikasi atau patching manual.
+
+### Kebijakan Retry Penuh (Full Pool Traversal)
+Untuk error 429 kuota riil (TPM/RPM habis) atau error 404/503 upstream, `agrouter` menerapkan kebijakan **mencoba seluruh akun di pool** (`maxAttempts`) secara berurutan tanpa pembatasan buatan, memastikan request tetap dilayani selama masih ada akun yang memiliki sisa kuota.
 
 ---
 
