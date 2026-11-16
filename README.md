@@ -207,7 +207,7 @@ Pada ekosistem Google Antigravity / CloudCode PA API, server backend memiliki pe
 4. **Zero-Patch pada Client:** Agen AI di sisi client (laptop, VPS, Poco, atau server lain) dapat menggunakan kode upstream asli tanpa perlu melakukan modifikasi atau patching manual.
 
 ### Kebijakan Retry Penuh (Full Pool Traversal)
-Untuk error 429 kuota riil (TPM/RPM habis) atau error 404/503 upstream, `agrouter` menerapkan kebijakan **mencoba seluruh akun di pool** (`maxAttempts`) secara berurutan tanpa pembatasan buatan, memastikan request tetap dilayani selama masih ada akun yang memiliki sisa kuota.
+Untuk error 429 kuota riil (TPM/RPM habis) atau error 404/503 upstream, `agrouter` menerapkan kebijakan **mencoba seluruh akun di pool** (`maxAttempts`) secara berurutan tanpa pembatasan buatan. Untuk permintaan Argon eksplisit, setelah seluruh pool dicoba, router mengembalikan error asli dan **tidak diam-diam mengganti Argon dengan Gemini Flash**. Fallback hanya berjalan jika memang dideklarasikan oleh model combo yang dipilih pengguna.
 
 ---
 
