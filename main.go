@@ -1694,17 +1694,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 
-					// For Argon standalone, fallback to Gemini 3.8 Flash instead of dead 404!
+					// Explicit model requests are fail-closed: do not silently replace
+					// Argon with Gemini Flash. Combos still advance through their own
+					// declared candidate models above.
 					if strings.Contains(upstreamModel, "argon") {
-						slogf("[argon-fallback] Argon not available upstream on any account, falling back to gemini-3.8-flash-high")
-						reqModel = "gemini-3.8-flash-high (fallback from argon)"
-						upstreamModel = "gemini-3.8-flash-tiered"
-						b := 24576
-						thinkingBudget = &b
-						agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
-						attempt = -1
-						attempted = map[string]bool{}
-						continue
+						slogf("[argon-no-fallback] Argon returned 404 across all %d active accounts; returning model_not_found", maxAttempts)
 					}
 
 					w.Header().Set("Content-Type", "application/json")
@@ -1722,17 +1716,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					strings.Contains(lastErrBody, "exceeded your current quota") ||
 					strings.Contains(lastErrBody, "Resets in"))
 
-				// Argon capacity or rolling gate fallback: if Argon hits 429 across accounts, fallback to Gemini 3.8 Flash!
+				// Argon is explicit-only: never silently switch to Gemini Flash.
+				// Retry the entire active pool first, then return the real upstream error.
 				if resp.StatusCode == 429 && strings.Contains(upstreamModel, "argon") && attempt == maxAttempts-1 {
-					slogf("[argon-429-fallback] Argon 429 exhausted across all accounts, falling back to gemini-3.8-flash-high")
-					reqModel = "gemini-3.8-flash-high (fallback from argon)"
-					upstreamModel = "gemini-3.8-flash-tiered"
-					b := 24576
-					thinkingBudget = &b
-					agBody = buildAGRequest(&o, upstreamModel, thinkingBudget, acc.ProjectID)
-					attempt = -1
-					attempted = map[string]bool{}
-					continue
+					slogf("[argon-no-fallback] Argon returned 429 across all %d active accounts; returning upstream 429", maxAttempts)
 				}
 
 				isTosViolation := resp.StatusCode == 403 && (strings.Contains(lastErrBody, "TOS_VIOLATION") ||
