@@ -466,14 +466,28 @@ var modelSynonym = map[string]string{
 	"argon-high":                 "gemini-4-argon-high",
 	"argon-4-low":                "gemini-4-argon-low",
 	"argon-low":                  "gemini-4-argon-low",
+	"neon":                       "gemini-4-neon-medium",
+	"neon-4":                     "gemini-4-neon-medium",
+	"neon-medium":                "gemini-4-neon-medium",
+	"neon-high":                  "gemini-4-neon-high",
+	"neon-low":                   "gemini-4-neon-low",
+	"hydrogen":                   "gemini-4-hydrogen-medium",
+	"hydrogen-4":                 "gemini-4-hydrogen-medium",
+	"hydrogen-medium":            "gemini-4-hydrogen-medium",
+	"hydrogen-high":              "gemini-4-hydrogen-high",
+	"hydrogen-low":               "gemini-4-hydrogen-low",
+	"hydrogen-xhigh":             "gemini-4-hydrogen-xhigh",
+	"gemini-4-neon":              "gemini-4-neon-medium",
+	"gemini-4-hydrogen":          "gemini-4-hydrogen-medium",
 }
 
 // tieredRe: gemini-3.6/3.7/3.8 flash levels ride on the bare "-tiered" upstream id,
 // with thinking strength as generationConfig.thinkingConfig.thinkingBudget
 // (9router 8499.js format "gemini-budget" + nE mapping).
 var tieredRe = regexp.MustCompile(`^gemini-(3\.[678])-flash-(high|medium|low)$`)
+var gemini4TieredRe = regexp.MustCompile(`^gemini-4-(neon|hydrogen)-(high|medium|low|xhigh)$`)
 
-var levelBudget = map[string]int{"low": 1024, "medium": 8192, "high": 24576}
+var levelBudget = map[string]int{"low": 1024, "medium": 8192, "high": 24576, "xhigh": 32768}
 
 // resolveUpstreamModel splits a public id into (wireModel, thinkingBudget).
 // budget nil = don't send thinkingConfig at all.
@@ -502,6 +516,10 @@ func resolveUpstreamModel(m string) (string, *int) {
 	if mm := tieredRe.FindStringSubmatch(m); mm != nil {
 		b := levelBudget[mm[2]]
 		return fmt.Sprintf("gemini-%s-flash-tiered", mm[1]), &b
+	}
+	if mm := gemini4TieredRe.FindStringSubmatch(m); mm != nil {
+		b := levelBudget[mm[2]]
+		return fmt.Sprintf("gemini-4-%s-%s", mm[1], mm[2]), &b
 	}
 	return m, nil
 }
@@ -4100,6 +4118,9 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		"gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
 		"gemini-3-flash-agent", "gemini-pro-agent", "gemini-3.1-pro-low",
 		"gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
+		"gemini-4-neon", "gemini-4-neon-high", "gemini-4-neon-medium", "gemini-4-neon-low", "gemini-4-neon-xhigh",
+		"gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low", "gemini-4-hydrogen-xhigh",
+		"orchestrator-neon", "orchestrator-argon",
 		"claude-opus-5-5-high", "claude-opus-5-5-medium", "claude-opus-5-5-low",
 		"claude-sonnet-5-5-high", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-low",
 		"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",

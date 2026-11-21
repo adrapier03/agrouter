@@ -24,12 +24,14 @@ Didesain khusus untuk menggantikan solusi berbasis web framework berat (seperti 
 - **Failover & Rotasi Penuh Pool Akun (Zero-Cap Retry):**
   - Saat suatu akun terkena limit kuota riil (429) atau error 404/503, `agrouter` tidak membatasi percobaan ke segelintir akun, melainkan otomatis mencoba berputar ke **seluruh akun aktif di pool** secara berurutan tanpa memutus sesi pengguna.
 - **Katalog Model Lengkap:**
+  - `gemini-4-neon-high`, `gemini-4-neon-medium`, `gemini-4-neon-low`, `gemini-4-neon-xhigh`
+  - `gemini-4-hydrogen-high`, `gemini-4-hydrogen-medium`, `gemini-4-hydrogen-low`, `gemini-4-hydrogen-xhigh`
+  - `gemini-4-argon-high`, `gemini-4-argon-medium`, `gemini-4-argon-low`
+  - `claude-opus-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-low`
+  - `claude-sonnet-5-5-high`, `claude-sonnet-5-5-medium`, `claude-sonnet-5-5-low`
   - `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`
-  - `gemini-3.7-flash-high`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low`
-  - `gemini-3.6-flash-high`, `gemini-3.6-flash-medium`, `gemini-3.6-flash-low`
-  - `gemini-3.5-flash-low`, `gemini-3.5-flash-extra-low`
-  - `claude-sonnet-4-6`, `claude-opus-4-6-thinking`
-  - `gpt-oss-120b-medium`, `gemini-3-flash-agent`, `gemini-pro-agent`
+  - `gpt-oss-120b-medium`
+  - Orchestrator is an Antigravity-native planner/executor workflow; it is not exposed as a fake single upstream model. Use the standalone Neon/Argon planner and Hydrogen executor IDs above, or define an explicit combo for fallback behavior.
 - **Multi-Account Pool & Auto Refresh:**
   - Dynamic round-robin load balancing antar akun aktif.
   - Failover otomatis: jika satu akun limit (429) atau overload (503/529), router otomatis memutar ke akun berikutnya.
