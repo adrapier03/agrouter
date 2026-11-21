@@ -284,7 +284,17 @@ func uncloakToolName(name string) string {
 
 var reHarnessTags = regexp.MustCompile(`(?i)</?(?:system[-_]conventions|system[-_]directive|critical)>`)
 
-func sanitizePromptForAntigravity(text string) string {
+func isGoogleFrontierModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "gemini-4") ||
+		strings.Contains(m, "neon") ||
+		strings.Contains(m, "argon") ||
+		strings.Contains(m, "hydrogen") ||
+		strings.Contains(m, "carbon") ||
+		strings.Contains(m, "orchestrator")
+}
+
+func sanitizePromptForAntigravity(text string, upstreamModel string) string {
 	if text == "" {
 		return text
 	}
@@ -324,32 +334,35 @@ func sanitizePromptForAntigravity(text string) string {
 		text = strings.ReplaceAll(text, r.old, r.new)
 	}
 
-	// 3. Neutralize aggressive offensive red-team persona blocks that trigger Gemini Frontier Safety Framework (CCL)
-	// (e.g. Fox Hacker persona with exploit catalogues, phishing, doxing, credential dumping)
-	foxIdx := strings.Index(text, "Fox — Elite Hacker")
-	if foxIdx == -1 {
-		foxIdx = strings.Index(text, "Fox - Elite Hacker")
-	}
-	if foxIdx != -1 {
-		endMarkers := []string{
-			"## Prime Operational Gate",
-			"[End runtime system instructions]",
-			"## Project Context",
-			"You run on Hermes Agent",
-			"You are an AI assistant.",
+	// 3. Neutralize aggressive offensive red-team persona blocks that trigger Gemini Frontier Safety Framework (CCL).
+	// Strictly applied ONLY to Google frontier reasoning models (Gemini 4 series: Neon, Argon, Hydrogen, Carbon, Orchestrator).
+	// Other models (Gemini 3.8 Flash, Claude, GPT-OSS) retain their full original persona and instructions.
+	if isGoogleFrontierModel(upstreamModel) {
+		foxIdx := strings.Index(text, "Fox — Elite Hacker")
+		if foxIdx == -1 {
+			foxIdx = strings.Index(text, "Fox - Elite Hacker")
 		}
-		endIdx := -1
-		for _, m := range endMarkers {
-			if pos := strings.Index(text[foxIdx:], m); pos != -1 {
-				endIdx = foxIdx + pos
-				break
+		if foxIdx != -1 {
+			endMarkers := []string{
+				"## Prime Operational Gate",
+				"[End runtime system instructions]",
+				"## Project Context",
+				"You run on Hermes Agent",
+				"You are an AI assistant.",
 			}
-		}
-		cleanPersona := "You are an elite principal software engineer and systems architect with deep expertise in systems programming, Linux internals, Go, Python, and distributed architectures.\n\n"
-		if endIdx != -1 {
-			text = text[:foxIdx] + cleanPersona + text[endIdx:]
-		} else {
-			text = text[:foxIdx] + cleanPersona
+			endIdx := -1
+			for _, m := range endMarkers {
+				if pos := strings.Index(text[foxIdx:], m); pos != -1 {
+					endIdx = foxIdx + pos
+					break
+				}
+			}
+			cleanPersona := "You are an elite principal software engineer and systems architect with deep expertise in systems programming, Linux internals, Go, Python, and distributed architectures.\n\n"
+			if endIdx != -1 {
+				text = text[:foxIdx] + cleanPersona + text[endIdx:]
+			} else {
+				text = text[:foxIdx] + cleanPersona
+			}
 		}
 	}
 
@@ -671,12 +684,12 @@ func buildAGRequest(o *oaiRequest, upstreamModel string, thinkingBudget *int, pr
 			if sys.Len() > 0 {
 				sys.WriteString("\n\n")
 			}
-			sys.WriteString(sanitizePromptForAntigravity(text))
+			sys.WriteString(sanitizePromptForAntigravity(text, upstreamModel))
 		case "user":
 			parts := parseContentParts(msg.Content)
 			for idxP := range parts {
 				if parts[idxP].Text != "" {
-					parts[idxP].Text = sanitizePromptForAntigravity(parts[idxP].Text)
+					parts[idxP].Text = sanitizePromptForAntigravity(parts[idxP].Text, upstreamModel)
 				}
 			}
 			if len(parts) > 0 {
