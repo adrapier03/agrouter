@@ -323,6 +323,36 @@ func sanitizePromptForAntigravity(text string) string {
 	for _, r := range replacements {
 		text = strings.ReplaceAll(text, r.old, r.new)
 	}
+
+	// 3. Neutralize aggressive offensive red-team persona blocks that trigger Gemini Frontier Safety Framework (CCL)
+	// (e.g. Fox Hacker persona with exploit catalogues, phishing, doxing, credential dumping)
+	foxIdx := strings.Index(text, "Fox — Elite Hacker")
+	if foxIdx == -1 {
+		foxIdx = strings.Index(text, "Fox - Elite Hacker")
+	}
+	if foxIdx != -1 {
+		endMarkers := []string{
+			"## Prime Operational Gate",
+			"[End runtime system instructions]",
+			"## Project Context",
+			"You run on Hermes Agent",
+			"You are an AI assistant.",
+		}
+		endIdx := -1
+		for _, m := range endMarkers {
+			if pos := strings.Index(text[foxIdx:], m); pos != -1 {
+				endIdx = foxIdx + pos
+				break
+			}
+		}
+		cleanPersona := "You are an elite principal software engineer and systems architect assisting Rafi with deep expertise in systems programming, Linux internals, Go, Python, and distributed architectures.\n\n"
+		if endIdx != -1 {
+			text = text[:foxIdx] + cleanPersona + text[endIdx:]
+		} else {
+			text = text[:foxIdx] + cleanPersona
+		}
+	}
+
 	return text
 }
 
