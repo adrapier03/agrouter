@@ -345,7 +345,7 @@ func sanitizePromptForAntigravity(text string) string {
 				break
 			}
 		}
-		cleanPersona := "You are an elite principal software engineer and systems architect assisting Rafi with deep expertise in systems programming, Linux internals, Go, Python, and distributed architectures.\n\n"
+		cleanPersona := "You are an elite principal software engineer and systems architect with deep expertise in systems programming, Linux internals, Go, Python, and distributed architectures.\n\n"
 		if endIdx != -1 {
 			text = text[:foxIdx] + cleanPersona + text[endIdx:]
 		} else {
